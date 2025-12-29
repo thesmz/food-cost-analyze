@@ -63,7 +63,6 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.image("https://img.icons8.com/color/96/000000/restaurant.png", width=80)
         st.header("🏪 The Shinmonzen")
         
         # Database status
