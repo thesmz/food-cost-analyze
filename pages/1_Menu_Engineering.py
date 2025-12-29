@@ -34,6 +34,10 @@ def is_valid_item_name(name) -> bool:
     cleaned = name_str.replace(',', '').replace('.', '').replace(' ', '').replace('-', '')
     if cleaned.isdigit():
         return False
+    # Filter out category names that slip through
+    invalid_names = ['carte', 'a la carte', 'dinner', 'lunch', 'breakfast', 'dessert', 'course', 'open food']
+    if name_str.lower() in invalid_names:
+        return False
     return True
 
 
@@ -137,7 +141,11 @@ st.info(f"📊 Analyzing **{len(menu_df)}** A la carte items")
 avg_qty = menu_df['Qty Sold'].mean()
 avg_margin = menu_df['Unit Margin'].mean()
 
-# Classify items
+# Classify items based on averages
+# Star = High Qty AND High Margin (top-right)
+# Plowhorse = High Qty AND Low Margin (bottom-right)
+# Puzzle = Low Qty AND High Margin (top-left)
+# Dog = Low Qty AND Low Margin (bottom-left)
 def classify(row):
     high_qty = row['Qty Sold'] >= avg_qty
     high_margin = row['Unit Margin'] >= avg_margin
@@ -152,55 +160,93 @@ def classify(row):
 
 menu_df['Quadrant'] = menu_df.apply(classify, axis=1)
 
-# Create scatter plot
+# Create scatter plot - CLEAN version without overlapping labels
 fig = go.Figure()
 
-colors = {'⭐ Star': '#FFD700', '🐴 Plowhorse': '#4CAF50', '❓ Puzzle': '#2196F3', '🐕 Dog': '#9E9E9E'}
+# Color and symbol mapping
+quadrant_style = {
+    '⭐ Star': {'color': '#FFD700', 'symbol': 'star'},
+    '🐴 Plowhorse': {'color': '#4CAF50', 'symbol': 'circle'},
+    '❓ Puzzle': {'color': '#2196F3', 'symbol': 'diamond'},
+    '🐕 Dog': {'color': '#9E9E9E', 'symbol': 'circle'}
+}
 
-for quadrant, color in colors.items():
+for quadrant, style in quadrant_style.items():
     df_q = menu_df[menu_df['Quadrant'] == quadrant]
     if not df_q.empty:
         fig.add_trace(go.Scatter(
             x=df_q['Qty Sold'],
             y=df_q['Unit Margin'],
-            mode='markers+text',
+            mode='markers',  # NO text labels - only markers
             name=quadrant,
-            marker=dict(size=15, color=color, line=dict(width=1, color='white')),
-            text=df_q['Item'],
-            textposition='top center',
-            hovertemplate='<b>%{text}</b><br>Qty: %{x}<br>Margin: ¥%{y:,.0f}<extra></extra>'
+            marker=dict(
+                size=12, 
+                color=style['color'], 
+                symbol=style['symbol'],
+                line=dict(width=1, color='white')
+            ),
+            text=df_q['Item'],  # For hover only
+            hovertemplate='<b>%{text}</b><br>Qty Sold: %{x:,.0f}<br>Unit Margin: ¥%{y:,.0f}<extra></extra>'
         ))
 
-# Add quadrant lines
-fig.add_hline(y=avg_margin, line_dash="dash", line_color="gray",
-              annotation_text=f"Avg Margin: ¥{avg_margin:,.0f}")
-fig.add_vline(x=avg_qty, line_dash="dash", line_color="gray",
-              annotation_text=f"Avg Qty: {avg_qty:.0f}")
+# Add quadrant dividing lines
+fig.add_hline(y=avg_margin, line_dash="dash", line_color="rgba(0,0,0,0.3)", line_width=2)
+fig.add_vline(x=avg_qty, line_dash="dash", line_color="rgba(0,0,0,0.3)", line_width=2)
+
+# Add quadrant labels
+fig.add_annotation(x=avg_qty*0.3, y=menu_df['Unit Margin'].max()*0.95, 
+                   text="❓ Puzzle<br>(High Margin, Low Qty)", showarrow=False, 
+                   font=dict(size=10, color="gray"))
+fig.add_annotation(x=menu_df['Qty Sold'].max()*0.85, y=menu_df['Unit Margin'].max()*0.95, 
+                   text="⭐ Star<br>(High Margin, High Qty)", showarrow=False,
+                   font=dict(size=10, color="gray"))
+fig.add_annotation(x=avg_qty*0.3, y=menu_df['Unit Margin'].min()*1.1, 
+                   text="🐕 Dog<br>(Low Margin, Low Qty)", showarrow=False,
+                   font=dict(size=10, color="gray"))
+fig.add_annotation(x=menu_df['Qty Sold'].max()*0.85, y=menu_df['Unit Margin'].min()*1.1, 
+                   text="🐴 Plowhorse<br>(Low Margin, High Qty)", showarrow=False,
+                   font=dict(size=10, color="gray"))
 
 fig.update_layout(
-    title="Menu Engineering Matrix (A La Carte Only)",
+    title=f"Menu Engineering Matrix | Avg Qty: {avg_qty:.0f} | Avg Margin: ¥{avg_margin:,.0f}",
     xaxis_title="Popularity (Qty Sold)",
     yaxis_title="Profitability (Unit Margin ¥)",
-    height=500,
+    height=550,
     showlegend=True,
-    legend=dict(orientation="h", yanchor="bottom", y=1.02)
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+    plot_bgcolor='white',
+    xaxis=dict(gridcolor='rgba(0,0,0,0.1)', zeroline=False),
+    yaxis=dict(gridcolor='rgba(0,0,0,0.1)', zeroline=False, tickformat=',.0f', tickprefix='¥')
 )
 
 st.plotly_chart(fig, use_container_width=True)
 
+st.caption("💡 **Tip:** Hover over points to see dish names")
+
 # Quadrant guide
 st.markdown("""
-| Quadrant | Description | Action |
-|----------|-------------|--------|
-| ⭐ **Star** | High popularity + High profit | Maintain & promote |
-| 🐴 **Plowhorse** | High popularity + Low profit | Consider price increase |
-| ❓ **Puzzle** | Low popularity + High profit | Increase marketing |
-| 🐕 **Dog** | Low popularity + Low profit | Consider removing |
+### 📖 Quadrant Guide / 分類ガイド
+
+| Quadrant | Qty vs Avg | Margin vs Avg | Action |
+|----------|------------|---------------|--------|
+| ⭐ **Star** | HIGH (≥ avg) | HIGH (≥ avg) | Keep promoting! |
+| 🐴 **Plowhorse** | HIGH (≥ avg) | LOW (< avg) | Raise price or reduce cost |
+| ❓ **Puzzle** | LOW (< avg) | HIGH (≥ avg) | Market more, feature it |
+| 🐕 **Dog** | LOW (< avg) | LOW (< avg) | Consider removing |
 """)
 
 # Detail table
 st.subheader("📋 Item Details / 品目詳細")
+
+# Add quadrant order for sorting
+quadrant_order = {'⭐ Star': 1, '🐴 Plowhorse': 2, '❓ Puzzle': 3, '🐕 Dog': 4}
+menu_df['_order'] = menu_df['Quadrant'].map(quadrant_order)
+
 display_df = menu_df[['Item', 'Quadrant', 'Qty Sold', 'Unit Margin', 'Total Contribution']].copy()
+display_df = display_df.sort_values(['_order' if '_order' in menu_df.columns else 'Quadrant', 'Qty Sold'], 
+                                     ascending=[True, False])
+display_df = display_df.drop(columns=['_order'], errors='ignore')
+display_df['Qty Sold'] = display_df['Qty Sold'].apply(lambda x: f"{x:,.0f}")
 display_df['Unit Margin'] = display_df['Unit Margin'].apply(lambda x: f"¥{x:,.0f}")
 display_df['Total Contribution'] = display_df['Total Contribution'].apply(lambda x: f"¥{x:,.0f}")
-st.dataframe(display_df.sort_values('Qty Sold', ascending=False), use_container_width=True)
+st.dataframe(display_df, use_container_width=True, hide_index=True)
