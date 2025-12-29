@@ -120,14 +120,26 @@ def main():
         beef_per_serving = st.number_input(
             "Beef per serving (g) / 1人前の牛肉量",
             min_value=50, max_value=500, value=150,
-            help="Grams of beef tenderloin per serving"
+            help="Grams of beef tenderloin per serving (cooked)"
         )
+        
+        beef_yield_pct = st.slider(
+            "Beef Yield (%) / 牛肉歩留まり",
+            min_value=50, max_value=100, value=65,
+            help="Usable meat after trimming (65% = 35% loss)"
+        ) / 100
         
         caviar_per_serving = st.number_input(
             "Caviar per serving (g) / 1人前のキャビア量",
             min_value=5, max_value=50, value=10,
             help="Grams of caviar per serving"
         )
+        
+        caviar_yield_pct = st.slider(
+            "Caviar Yield (%) / キャビア歩留まり",
+            min_value=80, max_value=100, value=100,
+            help="Usable caviar (usually 100%)"
+        ) / 100
         
         st.divider()
         
@@ -216,19 +228,19 @@ def main():
     ])
     
     with tab1:
-        display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving)
+        display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving, beef_yield_pct, caviar_yield_pct)
     
     with tab2:
-        display_beef_analysis(sales_df, invoices_df, beef_per_serving)
+        display_beef_analysis(sales_df, invoices_df, beef_per_serving, beef_yield_pct)
     
     with tab3:
-        display_caviar_analysis(sales_df, invoices_df, caviar_per_serving)
+        display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yield_pct)
     
     with tab4:
         display_vendor_items(invoices_df)
 
 
-def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving):
+def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving, beef_yield_pct, caviar_yield_pct):
     """Display overview dashboard"""
     st.header("📊 Overview / 概要")
     
@@ -253,11 +265,13 @@ def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving
             )
             total_beef_revenue = beef_sales_calc['calc_revenue'].sum()
             
-            expected_beef_kg = (total_beef_qty * beef_per_serving) / 1000
+            # Yield-adjusted raw beef needed
+            expected_raw_kg = (total_beef_qty * beef_per_serving) / beef_yield_pct / 1000
             
             st.metric("Dishes Sold / 販売数", f"{total_beef_qty:.0f}")
             st.metric("Revenue / 売上", f"¥{total_beef_revenue:,.0f}")
-            st.metric("Expected Usage / 予想使用量", f"{expected_beef_kg:.2f} kg")
+            st.metric("Raw Needed / 必要量(生)", f"{expected_raw_kg:.2f} kg",
+                     help=f"At {beef_yield_pct*100:.0f}% yield")
     
     with col2:
         st.subheader("🐟 Egg Toast Caviar")
@@ -277,11 +291,13 @@ def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving
             )
             total_caviar_revenue = caviar_sales_calc['calc_revenue'].sum()
             
-            expected_caviar_g = total_caviar_qty * caviar_per_serving
+            # Yield-adjusted caviar needed
+            expected_caviar_g = (total_caviar_qty * caviar_per_serving) / caviar_yield_pct
             
             st.metric("Dishes Sold / 販売数", f"{total_caviar_qty:.0f}")
             st.metric("Revenue / 売上", f"¥{total_caviar_revenue:,.0f}")
-            st.metric("Expected Usage / 予想使用量", f"{expected_caviar_g:.0f} g")
+            st.metric("Caviar Needed / 必要量", f"{expected_caviar_g:.0f} g",
+                     help=f"At {caviar_yield_pct*100:.0f}% yield")
     
     # Purchase summary
     st.divider()
@@ -302,9 +318,12 @@ def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving
         st.info("No invoice data in selected period")
 
 
-def display_beef_analysis(sales_df, invoices_df, beef_per_serving):
-    """Detailed beef tenderloin analysis"""
+def display_beef_analysis(sales_df, invoices_df, beef_per_serving, beef_yield_pct):
+    """Detailed beef tenderloin analysis with yield-adjusted calculations"""
     st.header("🥩 Beef Tenderloin Analysis / 牛肉分析")
+    
+    # Show yield info
+    st.info(f"📐 **Yield Rate / 歩留まり率:** {beef_yield_pct*100:.0f}% | **Serving Size / 1人前:** {beef_per_serving}g (cooked)")
     
     # Filter beef data
     beef_sales = sales_df[sales_df['name'].str.contains('Beef Tenderloin', case=False, na=False)] if not sales_df.empty else pd.DataFrame()
@@ -337,8 +356,9 @@ def display_beef_analysis(sales_df, invoices_df, beef_per_serving):
     else:
         total_revenue = 0
     
-    expected_usage_g = total_sold * beef_per_serving
-    expected_usage_kg = expected_usage_g / 1000
+    # YIELD-ADJUSTED: Raw meat needed = (Qty Sold * Serving Size) / Yield %
+    cooked_portion_kg = (total_sold * beef_per_serving) / 1000
+    expected_raw_kg = (total_sold * beef_per_serving) / beef_yield_pct / 1000
     
     # Calculate purchases
     if not beef_invoices.empty:
@@ -357,29 +377,32 @@ def display_beef_analysis(sales_df, invoices_df, beef_per_serving):
         st.metric("Total Cost / 仕入原価", f"¥{total_cost:,.0f}")
     
     with col3:
+        # Yield-adjusted waste ratio
         if total_purchased_kg > 0:
-            waste_ratio = max(0, (total_purchased_kg - expected_usage_kg) / total_purchased_kg * 100)
+            waste_ratio = max(0, (total_purchased_kg - expected_raw_kg) / total_purchased_kg * 100)
             st.metric("Waste Ratio / ロス率", f"{waste_ratio:.1f}%",
-                     delta=f"{waste_ratio - 35:.1f}%" if waste_ratio > 35 else None,
-                     delta_color="inverse")
+                     delta=f"{waste_ratio - 15:.1f}%" if waste_ratio > 15 else None,
+                     delta_color="inverse",
+                     help="Yield-adjusted: comparing purchased vs raw needed")
         
         if total_revenue > 0:
             cost_ratio = (total_cost / total_revenue) * 100
             st.metric("Cost Ratio / 原価率", f"{cost_ratio:.1f}%",
-                     delta=f"{cost_ratio - 30:.1f}%" if cost_ratio > 30 else None,
+                     delta=f"{cost_ratio - 35:.1f}%" if cost_ratio > 35 else None,
                      delta_color="inverse")
     
-    # Usage comparison chart
+    # Usage comparison chart with yield breakdown
     st.subheader("📈 Usage Comparison / 使用量比較")
+    st.caption(f"※ Cooked portion: {cooked_portion_kg:.2f} kg → Raw needed (at {beef_yield_pct*100:.0f}% yield): {expected_raw_kg:.2f} kg")
     
     comparison_data = pd.DataFrame({
-        'Category': ['Purchased\n仕入量', 'Expected Usage\n予想使用量', 'Potential Waste\n予想ロス'],
-        'Amount (kg)': [total_purchased_kg, expected_usage_kg, max(0, total_purchased_kg - expected_usage_kg)]
+        'Category': ['Purchased\n仕入量', 'Raw Needed\n必要量(生)', 'Cooked Portion\n調理済(参考)', 'Variance\n差異'],
+        'Amount (kg)': [total_purchased_kg, expected_raw_kg, cooked_portion_kg, max(0, total_purchased_kg - expected_raw_kg)]
     })
     
     fig = px.bar(comparison_data, x='Category', y='Amount (kg)', 
                  color='Category',
-                 color_discrete_sequence=['#3366cc', '#109618', '#dc3912'])
+                 color_discrete_sequence=['#3366cc', '#ff9900', '#109618', '#dc3912'])
     fig.update_layout(showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
     
@@ -413,9 +436,12 @@ def display_beef_analysis(sales_df, invoices_df, beef_per_serving):
             st.dataframe(category_summary, use_container_width=True)
 
 
-def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving):
-    """Detailed caviar analysis"""
+def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yield_pct):
+    """Detailed caviar analysis with yield-adjusted calculations"""
     st.header("🐟 Caviar Analysis / キャビア分析")
+    
+    # Show yield info
+    st.info(f"📐 **Yield Rate / 歩留まり率:** {caviar_yield_pct*100:.0f}% | **Serving Size / 1人前:** {caviar_per_serving}g")
     
     # Filter caviar data
     caviar_sales = sales_df[sales_df['name'].str.contains('Egg Toast Caviar', case=False, na=False)] if not sales_df.empty else pd.DataFrame()
@@ -448,7 +474,8 @@ def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving):
     else:
         total_revenue = 0
     
-    expected_usage_g = total_sold * caviar_per_serving
+    # YIELD-ADJUSTED: Expected usage
+    expected_usage_g = (total_sold * caviar_per_serving) / caviar_yield_pct
     
     # Caviar purchases
     if not caviar_invoices.empty:
@@ -473,11 +500,13 @@ def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving):
         st.metric("Total Cost / 仕入原価", f"¥{total_cost:,.0f}")
     
     with col3:
+        # Yield-adjusted waste ratio
         if total_purchased_g > 0:
             waste_ratio = max(0, (total_purchased_g - expected_usage_g) / total_purchased_g * 100)
             st.metric("Waste Ratio / ロス率", f"{waste_ratio:.1f}%",
                      delta=f"{waste_ratio - 10:.1f}%" if waste_ratio > 10 else None,
-                     delta_color="inverse")
+                     delta_color="inverse",
+                     help="Yield-adjusted calculation")
         
         if total_revenue > 0:
             cost_ratio = (total_cost / total_revenue) * 100
