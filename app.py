@@ -257,11 +257,23 @@ def main():
             help="Grams of beef tenderloin per Beef Tenderloin dish"
         )
         
+        beef_yield_pct = st.slider(
+            "Beef Yield Rate (%) / 牛肉歩留まり率",
+            min_value=50, max_value=100, value=65,
+            help="Percentage of usable meat after trimming (65% = 35% loss)"
+        ) / 100
+        
         caviar_per_serving = st.number_input(
             "Caviar per serving (g) / 1人前のキャビア量",
             min_value=5, max_value=50, value=10,
             help="Grams of caviar per Egg Toast Caviar dish"
         )
+        
+        caviar_yield_pct = st.slider(
+            "Caviar Yield Rate (%) / キャビア歩留まり率",
+            min_value=80, max_value=100, value=100,
+            help="Percentage of usable caviar (usually 100%)"
+        ) / 100
         
         # Data management (expandable)
         with st.expander("🗑️ Data Management / データ管理"):
@@ -391,25 +403,25 @@ def main():
     ])
     
     with tab1:
-        display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving)
+        display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving, beef_yield_pct, caviar_yield_pct)
     
     with tab2:
-        display_beef_analysis(sales_df, invoices_df, beef_per_serving)
+        display_beef_analysis(sales_df, invoices_df, beef_per_serving, beef_yield_pct)
     
     with tab3:
-        display_caviar_analysis(sales_df, invoices_df, caviar_per_serving)
+        display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yield_pct)
     
     with tab4:
         display_menu_engineering(sales_df)
     
     with tab5:
-        display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serving)
+        display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serving, beef_yield_pct, caviar_yield_pct)
     
     with tab6:
         display_vendor_items(invoices_df)
 
 
-def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving):
+def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving, beef_yield_pct, caviar_yield_pct):
     """Display overview dashboard"""
     st.header("📊 Overview / 概要")
     
@@ -434,11 +446,13 @@ def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving
             )
             total_beef_revenue = beef_sales_calc['calc_revenue'].sum()
             
-            expected_beef_kg = (total_beef_qty * beef_per_serving) / 1000
+            # Yield-adjusted expected usage
+            expected_beef_kg = (total_beef_qty * beef_per_serving / beef_yield_pct) / 1000
             
             st.metric("Dishes Sold / 販売数", f"{total_beef_qty:.0f}")
             st.metric("Revenue / 売上", f"¥{total_beef_revenue:,.0f}")
-            st.metric("Expected Usage / 予想使用量", f"{expected_beef_kg:.2f} kg")
+            st.metric("Expected Raw Usage / 必要量(生)", f"{expected_beef_kg:.2f} kg",
+                     help=f"At {beef_yield_pct*100:.0f}% yield")
     
     with col2:
         st.subheader("🐟 Egg Toast Caviar")
@@ -459,11 +473,13 @@ def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving
             )
             total_caviar_revenue = caviar_sales_calc['calc_revenue'].sum()
             
-            expected_caviar_g = total_caviar_qty * caviar_per_serving
+            # Yield-adjusted expected usage
+            expected_caviar_g = (total_caviar_qty * caviar_per_serving) / caviar_yield_pct
             
             st.metric("Dishes Sold / 販売数", f"{total_caviar_qty:.0f}")
             st.metric("Revenue / 売上", f"¥{total_caviar_revenue:,.0f}")
-            st.metric("Expected Usage / 予想使用量", f"{expected_caviar_g:.0f} g")
+            st.metric("Expected Usage / 予想使用量", f"{expected_caviar_g:.0f} g",
+                     help=f"At {caviar_yield_pct*100:.0f}% yield")
     
     # Purchase summary
     st.subheader("💰 Purchase Summary / 仕入概要")
@@ -483,14 +499,12 @@ def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving
         st.info("No invoice data in selected period")
 
 
-def display_beef_analysis(sales_df, invoices_df, beef_per_serving):
+def display_beef_analysis(sales_df, invoices_df, beef_per_serving, beef_yield_pct):
     """Detailed beef tenderloin analysis with yield-adjusted calculations"""
     st.header("🥩 Beef Tenderloin Analysis / 牛肉分析")
     
-    # Get yield percentage from config (default to 1.0 if not found)
-    yield_percent = DISH_INGREDIENT_MAP.get('Beef Tenderloin', {}).get('yield_percent', 1.0)
-    if yield_percent <= 0:
-        yield_percent = 1.0  # Prevent division by zero
+    # Use yield percentage from sidebar settings
+    yield_percent = beef_yield_pct if beef_yield_pct > 0 else 0.65
     
     # Filter beef data
     beef_sales = sales_df[sales_df['name'].str.contains('Beef Tenderloin', case=False, na=False)] if not sales_df.empty else pd.DataFrame()
@@ -501,7 +515,7 @@ def display_beef_analysis(sales_df, invoices_df, beef_per_serving):
         return
     
     # Show yield info
-    st.info(f"📐 **Yield Rate / 歩留まり率:** {yield_percent*100:.0f}% (cooked portion from raw purchase)")
+    st.info(f"📐 **Yield Rate / 歩留まり率:** {yield_percent*100:.0f}% (adjust in sidebar settings)")
     
     col1, col2, col3 = st.columns(3)
     
@@ -637,14 +651,12 @@ def display_beef_analysis(sales_df, invoices_df, beef_per_serving):
         st.dataframe(category_summary, use_container_width=True)
 
 
-def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving):
+def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yield_pct):
     """Detailed caviar analysis with yield-adjusted calculations"""
     st.header("🐟 Caviar Analysis / キャビア分析")
     
-    # Get yield percentage from config (default to 1.0 if not found)
-    yield_percent = DISH_INGREDIENT_MAP.get('Egg Toast Caviar', {}).get('yield_percent', 1.0)
-    if yield_percent <= 0:
-        yield_percent = 1.0  # Prevent division by zero
+    # Use yield percentage from sidebar settings
+    yield_percent = caviar_yield_pct if caviar_yield_pct > 0 else 1.0
     
     # Filter caviar data
     caviar_sales = sales_df[sales_df['name'].str.contains('Egg Toast Caviar', case=False, na=False)] if not sales_df.empty else pd.DataFrame()
@@ -655,7 +667,7 @@ def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving):
         return
     
     # Show yield info
-    st.info(f"📐 **Yield Rate / 歩留まり率:** {yield_percent*100:.0f}% (no trimming loss)")
+    st.info(f"📐 **Yield Rate / 歩留まり率:** {yield_percent*100:.0f}% (adjust in sidebar settings)")
     
     col1, col2, col3 = st.columns(3)
     
@@ -808,11 +820,14 @@ def display_menu_engineering(sales_df):
         return
     
     # Filter options
-    col_filter1, col_filter2 = st.columns(2)
+    st.subheader("🔧 Filter Options / フィルター設定")
+    col_filter1, col_filter2, col_filter3 = st.columns(3)
     with col_filter1:
         exclude_breakfast = st.checkbox("Exclude Breakfast / 朝食を除外", value=True)
     with col_filter2:
-        min_qty_filter = st.number_input("Min Qty Sold / 最小販売数", min_value=1, value=5, 
+        exclude_beverage = st.checkbox("Exclude Beverage / 飲料を除外", value=True)
+    with col_filter3:
+        min_qty_filter = st.number_input("Min Qty Sold / 最小販売数", min_value=1, value=10, 
                                          help="Filter out items with very low sales")
     
     # Filter data
@@ -822,7 +837,11 @@ def display_menu_engineering(sales_df):
     if exclude_breakfast and 'category' in filtered_df.columns:
         filtered_df = filtered_df[~filtered_df['category'].str.contains('Breakfast|朝食|breakfast', case=False, na=False)]
     
-    # Filter out items where name looks like a number (invalid data)
+    # Filter out Beverage department if requested
+    if exclude_beverage and 'category' in filtered_df.columns:
+        filtered_df = filtered_df[~filtered_df['category'].str.contains('Beverage|飲料|beverage|ドリンク|Wine|Beer|Cocktail|Sake|酒', case=False, na=False)]
+    
+    # Filter out items where name looks like invalid data
     def is_valid_item_name(name):
         if pd.isna(name):
             return False
@@ -830,12 +849,18 @@ def display_menu_engineering(sales_df):
         # Reject if empty
         if not name_str:
             return False
+        # Reject if it's only dashes, underscores, or special characters
+        if all(c in '-_. ' for c in name_str):
+            return False
         # Reject if it's purely numeric (with possible decimal/commas)
-        cleaned = name_str.replace(',', '').replace('.', '').replace(' ', '')
+        cleaned = name_str.replace(',', '').replace('.', '').replace(' ', '').replace('-', '')
         if cleaned.isdigit():
             return False
         # Reject if it starts with a number and looks like currency/amount
-        if name_str[0].isdigit() and (',' in name_str or len(cleaned) > 6):
+        if len(name_str) > 0 and name_str[0].isdigit() and (',' in name_str or len(cleaned) > 6):
+            return False
+        # Reject very short names that are likely codes
+        if len(name_str) <= 2:
             return False
         return True
     
@@ -925,49 +950,105 @@ def display_menu_engineering(sales_df):
     
     menu_df['Quadrant / 分類'] = menu_df.apply(classify_item, axis=1)
     
-    # Create scatter plot
-    fig = px.scatter(
-        menu_df,
-        x='Qty Sold / 販売数',
-        y='Unit Margin / 単品利益',
-        color='Quadrant / 分類',
-        size='Total Revenue / 総売上',
-        hover_name='Item / 品目',
-        hover_data={
-            'Total Revenue / 総売上': ':,.0f',
-            'Selling Price / 販売価格': ':,.0f',
-            'Food Cost / 原価': ':,.0f'
-        },
-        color_discrete_map={
-            '⭐ Star / スター': '#FFD700',
-            '🐴 Plowhorse / 稼ぎ頭': '#4CAF50',
-            '❓ Puzzle / パズル': '#2196F3',
-            '🐕 Dog / ドッグ': '#9E9E9E'
-        }
-    )
+    # Create improved scatter plot using graph_objects for better control
+    fig = go.Figure()
     
-    # Add reference lines for quadrants
-    fig.add_hline(y=avg_margin, line_dash="dash", line_color="gray", 
-                  annotation_text=f"Avg Margin: ¥{avg_margin:,.0f}")
-    fig.add_vline(x=avg_qty, line_dash="dash", line_color="gray",
-                  annotation_text=f"Avg Qty: {avg_qty:.0f}")
+    # Define colors and symbols for each quadrant
+    quadrant_styles = {
+        '⭐ Star / スター': {'color': '#FFD700', 'symbol': 'star', 'name': '⭐ Star'},
+        '🐴 Plowhorse / 稼ぎ頭': {'color': '#4CAF50', 'symbol': 'circle', 'name': '🐴 Plowhorse'},
+        '❓ Puzzle / パズル': {'color': '#2196F3', 'symbol': 'diamond', 'name': '❓ Puzzle'},
+        '🐕 Dog / ドッグ': {'color': '#9E9E9E', 'symbol': 'x', 'name': '🐕 Dog'}
+    }
     
-    # Add quadrant labels
+    # Calculate bubble sizes (normalized)
+    max_revenue = menu_df['Total Revenue / 総売上'].max()
+    min_size, max_size = 8, 40
+    
+    for quadrant, style in quadrant_styles.items():
+        df_quad = menu_df[menu_df['Quadrant / 分類'] == quadrant]
+        if df_quad.empty:
+            continue
+        
+        # Calculate sizes
+        sizes = df_quad['Total Revenue / 総売上'].apply(
+            lambda x: min_size + (max_size - min_size) * (x / max_revenue) if max_revenue > 0 else min_size
+        )
+        
+        fig.add_trace(go.Scatter(
+            x=df_quad['Qty Sold / 販売数'],
+            y=df_quad['Unit Margin / 単品利益'],
+            mode='markers',
+            name=style['name'],
+            marker=dict(
+                size=sizes,
+                color=style['color'],
+                symbol=style['symbol'],
+                line=dict(width=1, color='white'),
+                opacity=0.8
+            ),
+            text=df_quad['Item / 品目'],
+            hovertemplate=(
+                '<b>%{text}</b><br>' +
+                'Qty: %{x:,.0f}<br>' +
+                'Margin: ¥%{y:,.0f}<br>' +
+                '<extra></extra>'
+            )
+        ))
+    
+    # Add quadrant dividing lines
+    fig.add_hline(y=avg_margin, line_dash="dash", line_color="rgba(100,100,100,0.5)", line_width=2)
+    fig.add_vline(x=avg_qty, line_dash="dash", line_color="rgba(100,100,100,0.5)", line_width=2)
+    
+    # Add quadrant labels in corners
     max_qty = menu_df['Qty Sold / 販売数'].max()
     max_margin = menu_df['Unit Margin / 単品利益'].max()
-    min_margin = menu_df['Unit Margin / 単品利益'].min()
+    min_margin = max(0, menu_df['Unit Margin / 単品利益'].min())
     
-    fig.add_annotation(x=max_qty * 0.75, y=max_margin * 0.9, text="⭐ STARS", showarrow=False, font=dict(size=14, color="gold"))
-    fig.add_annotation(x=max_qty * 0.75, y=min_margin + (avg_margin - min_margin) * 0.3, text="🐴 PLOWHORSES", showarrow=False, font=dict(size=14, color="green"))
-    fig.add_annotation(x=avg_qty * 0.3, y=max_margin * 0.9, text="❓ PUZZLES", showarrow=False, font=dict(size=14, color="blue"))
-    fig.add_annotation(x=avg_qty * 0.3, y=min_margin + (avg_margin - min_margin) * 0.3, text="🐕 DOGS", showarrow=False, font=dict(size=14, color="gray"))
+    # Background rectangles for quadrants (subtle)
+    fig.add_shape(type="rect", x0=avg_qty, y0=avg_margin, x1=max_qty*1.1, y1=max_margin*1.1,
+                  fillcolor="rgba(255,215,0,0.1)", line=dict(width=0), layer="below")  # Stars
+    fig.add_shape(type="rect", x0=0, y0=avg_margin, x1=avg_qty, y1=max_margin*1.1,
+                  fillcolor="rgba(33,150,243,0.1)", line=dict(width=0), layer="below")  # Puzzles
+    fig.add_shape(type="rect", x0=avg_qty, y0=min_margin, x1=max_qty*1.1, y1=avg_margin,
+                  fillcolor="rgba(76,175,80,0.1)", line=dict(width=0), layer="below")  # Plowhorses
+    fig.add_shape(type="rect", x0=0, y0=min_margin, x1=avg_qty, y1=avg_margin,
+                  fillcolor="rgba(158,158,158,0.1)", line=dict(width=0), layer="below")  # Dogs
     
     fig.update_layout(
-        title="Menu Engineering Matrix / メニューエンジニアリングマトリクス",
-        xaxis_title="Popularity (Qty Sold) / 人気度（販売数）",
-        yaxis_title="Profitability (Unit Margin ¥) / 収益性（単品利益）",
-        height=600
+        title=dict(
+            text="Menu Engineering Matrix / メニューエンジニアリングマトリクス",
+            font=dict(size=18)
+        ),
+        xaxis=dict(
+            title="Popularity (Qty Sold) / 人気度（販売数）",
+            gridcolor='rgba(200,200,200,0.3)',
+            zeroline=False
+        ),
+        yaxis=dict(
+            title="Profitability (Unit Margin ¥) / 収益性（単品利益）",
+            gridcolor='rgba(200,200,200,0.3)',
+            zeroline=False,
+            tickformat=',.0f',
+            tickprefix='¥'
+        ),
+        height=550,
+        plot_bgcolor='white',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5
+        ),
+        margin=dict(t=80)
     )
+    
+    # Add annotations for averages
+    fig.add_annotation(x=max_qty*0.95, y=avg_margin, text=f"Avg Margin: ¥{avg_margin:,.0f}",
+                      showarrow=False, yshift=15, font=dict(size=10, color="gray"))
+    fig.add_annotation(x=avg_qty, y=max_margin*0.95, text=f"Avg Qty: {avg_qty:,.0f}",
+                      showarrow=False, xshift=50, font=dict(size=10, color="gray"))
     
     st.plotly_chart(fig, use_container_width=True)
     
@@ -994,13 +1075,12 @@ def display_menu_engineering(sales_df):
     st.dataframe(display_df, use_container_width=True)
 
 
-def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serving):
+def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serving, beef_yield_pct, caviar_yield_pct):
     """
     Predictive Purchasing - Forecast next month's ingredient needs
     Uses weighted recent months for more accurate predictions
     """
     st.header("🔮 Predictive Purchasing / 発注予測")
-    st.markdown("**Next Month Order Recommendation** based on recent sales trends")
     
     if sales_df.empty:
         st.warning("No sales data available for forecasting. Upload at least one month of data.")
@@ -1018,13 +1098,23 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     sales_df_copy['month'] = pd.to_datetime(sales_df_copy['date']).dt.to_period('M')
     months_available = sales_df_copy['month'].nunique()
     
+    # Determine data range and target month
+    all_months = sales_df_copy['month'].sort_values().unique()
+    first_month = all_months[0]
+    last_month = all_months[-1]
+    
+    # Target month is the month after the last data month
+    target_month = (last_month.to_timestamp() + pd.DateOffset(months=1)).to_period('M')
+    target_month_name = target_month.to_timestamp().strftime('%B %Y')
+    target_month_jp = target_month.to_timestamp().strftime('%Y年%m月')
+    
     # Forecast method selection
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 Forecast Settings")
     
     forecast_method = st.sidebar.radio(
         "Forecast Method / 予測方法",
-        options=["Weighted Recent (推奨)", "Last Month Only", "Simple Average"],
+        options=["Weighted Recent (推奨)", "Last Month Only", "Simple Average", "Same Month Last Year"],
         index=0,
         help="Weighted gives more importance to recent months"
     )
@@ -1035,9 +1125,15 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
         help="Extra buffer for unexpected demand"
     ) / 100
     
-    st.info(f"📊 **Data Available:** {months_available} month(s) | **Method:** {forecast_method} | **Safety Stock:** {safety_stock_pct*100:.0f}%")
+    # Show target month prominently
+    st.markdown(f"""
+    ### 🎯 Forecasting for: **{target_month_name}** ({target_month_jp})
+    *Based on data from {first_month} to {last_month}*
+    """)
     
-    def calculate_forecast_qty(monthly_series, method):
+    st.info(f"📊 **Data:** {months_available} months ({first_month} ~ {last_month}) | **Method:** {forecast_method} | **Safety:** +{safety_stock_pct*100:.0f}%")
+    
+    def calculate_forecast_qty(monthly_series, method, target_month):
         """Calculate forecasted quantity based on selected method"""
         if monthly_series.empty:
             return 0
@@ -1052,6 +1148,17 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
         elif method == "Simple Average":
             # Simple average of all months
             return monthly_series.mean()
+        
+        elif method == "Same Month Last Year":
+            # Try to find the same month from previous year
+            target_month_num = target_month.month
+            same_months = [m for m in monthly_series.index if m.month == target_month_num]
+            if same_months:
+                # Use the most recent same-month data
+                return monthly_series[same_months[-1]]
+            else:
+                # Fall back to weighted average if no same-month data
+                return monthly_series.mean()
         
         else:  # Weighted Recent (default)
             # Use weighted average: recent months get more weight
@@ -1074,10 +1181,8 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     # Beef Tenderloin Forecast
     st.subheader("🥩 Beef Tenderloin Forecast / 牛肉発注予測")
     
-    beef_config = DISH_INGREDIENT_MAP.get('Beef Tenderloin', {})
-    beef_yield = beef_config.get('yield_percent', 0.65)
-    if beef_yield <= 0:
-        beef_yield = 0.65
+    # Use yield from sidebar
+    beef_yield = beef_yield_pct if beef_yield_pct > 0 else 0.65
     
     beef_sales = sales_df_copy[sales_df_copy['name'].str.contains('Beef Tenderloin', case=False, na=False)]
     
@@ -1086,7 +1191,7 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
         beef_monthly = beef_sales.groupby('month')['qty'].sum()
         
         # Calculate forecast using selected method
-        forecast_qty = calculate_forecast_qty(beef_monthly, forecast_method)
+        forecast_qty = calculate_forecast_qty(beef_monthly, forecast_method, target_month)
         avg_monthly_qty = beef_monthly.mean()  # For reference
         
         # Calculate raw material needed (yield-adjusted)
@@ -1156,10 +1261,8 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     # Caviar Forecast
     st.subheader("🐟 Caviar Forecast / キャビア発注予測")
     
-    caviar_config = DISH_INGREDIENT_MAP.get('Egg Toast Caviar', {})
-    caviar_yield = caviar_config.get('yield_percent', 1.0)
-    if caviar_yield <= 0:
-        caviar_yield = 1.0
+    # Use yield from sidebar
+    caviar_yield = caviar_yield_pct if caviar_yield_pct > 0 else 1.0
     
     caviar_sales = sales_df_copy[sales_df_copy['name'].str.contains('Egg Toast Caviar', case=False, na=False)]
     
@@ -1168,7 +1271,7 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
         caviar_monthly = caviar_sales.groupby('month')['qty'].sum()
         
         # Calculate forecast using selected method
-        forecast_qty = calculate_forecast_qty(caviar_monthly, forecast_method)
+        forecast_qty = calculate_forecast_qty(caviar_monthly, forecast_method, target_month)
         avg_monthly_qty = caviar_monthly.mean()  # For reference
         
         # Calculate raw material needed (yield-adjusted)
@@ -1235,7 +1338,7 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     
     # Summary recommendation card
     st.divider()
-    st.subheader("📋 Order Summary / 発注サマリー")
+    st.subheader(f"📋 Order Summary for {target_month_name} / {target_month_jp}の発注サマリー")
     
     summary_data = []
     
@@ -1243,7 +1346,7 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     beef_sales_sum = sales_df_copy[sales_df_copy['name'].str.contains('Beef Tenderloin', case=False, na=False)]
     if not beef_sales_sum.empty:
         beef_monthly_sum = beef_sales_sum.groupby('month')['qty'].sum()
-        forecast_beef = calculate_forecast_qty(beef_monthly_sum, forecast_method)
+        forecast_beef = calculate_forecast_qty(beef_monthly_sum, forecast_method, target_month)
         avg_beef = beef_monthly_sum.mean()
         raw_beef_kg = (forecast_beef * beef_per_serving / beef_yield / 1000) * (1 + safety_stock_pct)
         summary_data.append({
@@ -1256,7 +1359,7 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     caviar_sales_sum = sales_df_copy[sales_df_copy['name'].str.contains('Egg Toast Caviar', case=False, na=False)]
     if not caviar_sales_sum.empty:
         caviar_monthly_sum = caviar_sales_sum.groupby('month')['qty'].sum()
-        forecast_caviar = calculate_forecast_qty(caviar_monthly_sum, forecast_method)
+        forecast_caviar = calculate_forecast_qty(caviar_monthly_sum, forecast_method, target_month)
         avg_caviar = caviar_monthly_sum.mean()
         raw_caviar_g = (forecast_caviar * caviar_per_serving / caviar_yield) * (1 + safety_stock_pct)
         summary_data.append({
@@ -1269,7 +1372,7 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     if summary_data:
         st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
         
-        st.caption(f"※ Method: {forecast_method} | Safety Stock: {safety_stock_pct*100:.0f}%")
+        st.caption(f"※ Method: {forecast_method} | Safety Stock: +{safety_stock_pct*100:.0f}%")
 
 
 def display_vendor_items(invoices_df):
