@@ -253,13 +253,13 @@ def main():
         
         beef_per_serving = st.number_input(
             "Beef per serving (g) / 1人前の牛肉量",
-            min_value=50, max_value=500, value=180,
+            min_value=50, max_value=500, value=150,
             help="Grams of beef tenderloin per Beef Tenderloin dish"
         )
         
         caviar_per_serving = st.number_input(
             "Caviar per serving (g) / 1人前のキャビア量",
-            min_value=5, max_value=50, value=15,
+            min_value=5, max_value=50, value=10,
             help="Grams of caviar per Egg Toast Caviar dish"
         )
         
@@ -807,12 +807,57 @@ def display_menu_engineering(sales_df):
         st.warning("No sales data available for Menu Engineering analysis")
         return
     
+    # Filter options
+    col_filter1, col_filter2 = st.columns(2)
+    with col_filter1:
+        exclude_breakfast = st.checkbox("Exclude Breakfast / 朝食を除外", value=True)
+    with col_filter2:
+        min_qty_filter = st.number_input("Min Qty Sold / 最小販売数", min_value=1, value=5, 
+                                         help="Filter out items with very low sales")
+    
+    # Filter data
+    filtered_df = sales_df.copy()
+    
+    # Filter out Breakfast category if requested
+    if exclude_breakfast and 'category' in filtered_df.columns:
+        filtered_df = filtered_df[~filtered_df['category'].str.contains('Breakfast|朝食|breakfast', case=False, na=False)]
+    
+    # Filter out items where name looks like a number (invalid data)
+    def is_valid_item_name(name):
+        if pd.isna(name):
+            return False
+        name_str = str(name).strip()
+        # Reject if empty
+        if not name_str:
+            return False
+        # Reject if it's purely numeric (with possible decimal/commas)
+        cleaned = name_str.replace(',', '').replace('.', '').replace(' ', '')
+        if cleaned.isdigit():
+            return False
+        # Reject if it starts with a number and looks like currency/amount
+        if name_str[0].isdigit() and (',' in name_str or len(cleaned) > 6):
+            return False
+        return True
+    
+    filtered_df = filtered_df[filtered_df['name'].apply(is_valid_item_name)]
+    
+    if filtered_df.empty:
+        st.warning("No valid menu items found after filtering")
+        return
+    
     # Aggregate sales by item
-    item_sales = sales_df.groupby('name').agg({
+    item_sales = filtered_df.groupby('name').agg({
         'qty': 'sum',
         'net_total': 'sum',
         'price': 'mean'
     }).reset_index()
+    
+    # Filter by minimum quantity
+    item_sales = item_sales[item_sales['qty'] >= min_qty_filter]
+    
+    if item_sales.empty:
+        st.warning(f"No items found with qty >= {min_qty_filter}")
+        return
     
     # Calculate metrics for each item
     menu_data = []
@@ -831,7 +876,6 @@ def display_menu_engineering(sales_df):
         elif item_name in DISH_INGREDIENT_MAP:
             dish_config = DISH_INGREDIENT_MAP[item_name]
             selling_price = dish_config.get('selling_price', avg_price)
-            # Estimate food cost at 30% if not specified
             food_cost = selling_price * 0.30
         else:
             selling_price = avg_price if avg_price > 0 else 1000
@@ -858,6 +902,8 @@ def display_menu_engineering(sales_df):
     if menu_df.empty:
         st.warning("No menu items found for analysis")
         return
+    
+    st.info(f"📊 Analyzing **{len(menu_df)}** menu items")
     
     # Calculate averages for quadrant lines
     avg_qty = menu_df['Qty Sold / 販売数'].mean()
@@ -951,9 +997,10 @@ def display_menu_engineering(sales_df):
 def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serving):
     """
     Predictive Purchasing - Forecast next month's ingredient needs
+    Uses weighted recent months for more accurate predictions
     """
     st.header("🔮 Predictive Purchasing / 発注予測")
-    st.markdown("**Next Month Order Recommendation** based on historical sales data")
+    st.markdown("**Next Month Order Recommendation** based on recent sales trends")
     
     if sales_df.empty:
         st.warning("No sales data available for forecasting. Upload at least one month of data.")
@@ -967,10 +1014,62 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
         st.error("Date column not found in sales data")
         return
     
-    sales_df['month'] = pd.to_datetime(sales_df['date']).dt.to_period('M')
-    months_available = sales_df['month'].nunique()
+    sales_df_copy = sales_df.copy()
+    sales_df_copy['month'] = pd.to_datetime(sales_df_copy['date']).dt.to_period('M')
+    months_available = sales_df_copy['month'].nunique()
     
-    st.info(f"📊 **Data Available:** {months_available} month(s) of historical data")
+    # Forecast method selection
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 Forecast Settings")
+    
+    forecast_method = st.sidebar.radio(
+        "Forecast Method / 予測方法",
+        options=["Weighted Recent (推奨)", "Last Month Only", "Simple Average"],
+        index=0,
+        help="Weighted gives more importance to recent months"
+    )
+    
+    safety_stock_pct = st.sidebar.slider(
+        "Safety Stock % / 安全在庫率",
+        min_value=0, max_value=30, value=int(safety_stock * 100),
+        help="Extra buffer for unexpected demand"
+    ) / 100
+    
+    st.info(f"📊 **Data Available:** {months_available} month(s) | **Method:** {forecast_method} | **Safety Stock:** {safety_stock_pct*100:.0f}%")
+    
+    def calculate_forecast_qty(monthly_series, method):
+        """Calculate forecasted quantity based on selected method"""
+        if monthly_series.empty:
+            return 0
+        
+        # Sort by month
+        monthly_series = monthly_series.sort_index()
+        
+        if method == "Last Month Only":
+            # Just use the most recent month
+            return monthly_series.iloc[-1]
+        
+        elif method == "Simple Average":
+            # Simple average of all months
+            return monthly_series.mean()
+        
+        else:  # Weighted Recent (default)
+            # Use weighted average: recent months get more weight
+            n = len(monthly_series)
+            if n == 1:
+                return monthly_series.iloc[0]
+            elif n == 2:
+                # 60% last month, 40% previous
+                return monthly_series.iloc[-1] * 0.6 + monthly_series.iloc[-2] * 0.4
+            else:
+                # Last 3 months: 50%, 30%, 20%
+                weights = [0.5, 0.3, 0.2]
+                recent_3 = monthly_series.iloc[-3:].values
+                if len(recent_3) < 3:
+                    # Pad with available data
+                    weights = weights[-len(recent_3):]
+                    weights = [w / sum(weights) for w in weights]  # Normalize
+                return sum(v * w for v, w in zip(reversed(recent_3), weights))
     
     # Beef Tenderloin Forecast
     st.subheader("🥩 Beef Tenderloin Forecast / 牛肉発注予測")
@@ -980,27 +1079,31 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     if beef_yield <= 0:
         beef_yield = 0.65
     
-    beef_sales = sales_df[sales_df['name'].str.contains('Beef Tenderloin', case=False, na=False)]
+    beef_sales = sales_df_copy[sales_df_copy['name'].str.contains('Beef Tenderloin', case=False, na=False)]
     
     if not beef_sales.empty:
         # Calculate monthly sales
         beef_monthly = beef_sales.groupby('month')['qty'].sum()
-        avg_monthly_qty = beef_monthly.mean()
+        
+        # Calculate forecast using selected method
+        forecast_qty = calculate_forecast_qty(beef_monthly, forecast_method)
+        avg_monthly_qty = beef_monthly.mean()  # For reference
         
         # Calculate raw material needed (yield-adjusted)
         raw_per_serving_g = beef_per_serving / beef_yield
-        expected_raw_g = avg_monthly_qty * raw_per_serving_g
+        expected_raw_g = forecast_qty * raw_per_serving_g
         expected_raw_kg = expected_raw_g / 1000
         
         # Add safety stock
-        recommended_order_kg = expected_raw_kg * (1 + safety_stock)
+        recommended_order_kg = expected_raw_kg * (1 + safety_stock_pct)
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
             st.metric(
-                "Avg Monthly Sales / 月平均販売数",
-                f"{avg_monthly_qty:.0f} servings"
+                "Forecast Sales / 予測販売数",
+                f"{forecast_qty:.0f} servings",
+                delta=f"Avg: {avg_monthly_qty:.0f}" if abs(forecast_qty - avg_monthly_qty) > 5 else None
             )
         
         with col2:
@@ -1014,20 +1117,24 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
             st.metric(
                 "🎯 Recommended Order / 推奨発注量",
                 f"{recommended_order_kg:.1f} kg",
-                delta=f"+{safety_stock*100:.0f}% safety stock",
+                delta=f"+{safety_stock_pct*100:.0f}% safety stock",
                 delta_color="normal"
             )
         
-        # Monthly trend chart
-        if len(beef_monthly) > 1:
+        # Monthly trend chart with forecast line
+        if len(beef_monthly) > 0:
             trend_df = beef_monthly.reset_index()
             trend_df.columns = ['Month', 'Qty Sold']
             trend_df['Month'] = trend_df['Month'].astype(str)
             
             fig = px.bar(trend_df, x='Month', y='Qty Sold', 
                         title="Monthly Beef Tenderloin Sales / 月別牛肉販売数")
-            fig.add_hline(y=avg_monthly_qty, line_dash="dash", line_color="red",
+            # Add average line
+            fig.add_hline(y=avg_monthly_qty, line_dash="dash", line_color="gray",
                          annotation_text=f"Avg: {avg_monthly_qty:.0f}")
+            # Add forecast line (different color)
+            fig.add_hline(y=forecast_qty, line_dash="solid", line_color="green",
+                         annotation_text=f"Forecast: {forecast_qty:.0f}")
             st.plotly_chart(fig, use_container_width=True)
         
         # Cost estimation
@@ -1054,27 +1161,31 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     if caviar_yield <= 0:
         caviar_yield = 1.0
     
-    caviar_sales = sales_df[sales_df['name'].str.contains('Egg Toast Caviar', case=False, na=False)]
+    caviar_sales = sales_df_copy[sales_df_copy['name'].str.contains('Egg Toast Caviar', case=False, na=False)]
     
     if not caviar_sales.empty:
         # Calculate monthly sales
         caviar_monthly = caviar_sales.groupby('month')['qty'].sum()
-        avg_monthly_qty = caviar_monthly.mean()
+        
+        # Calculate forecast using selected method
+        forecast_qty = calculate_forecast_qty(caviar_monthly, forecast_method)
+        avg_monthly_qty = caviar_monthly.mean()  # For reference
         
         # Calculate raw material needed (yield-adjusted)
         raw_per_serving_g = caviar_per_serving / caviar_yield
-        expected_raw_g = avg_monthly_qty * raw_per_serving_g
+        expected_raw_g = forecast_qty * raw_per_serving_g
         
         # Add safety stock
-        recommended_order_g = expected_raw_g * (1 + safety_stock)
+        recommended_order_g = expected_raw_g * (1 + safety_stock_pct)
         recommended_order_units = recommended_order_g / 100  # 100g per unit
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
             st.metric(
-                "Avg Monthly Sales / 月平均販売数",
-                f"{avg_monthly_qty:.0f} servings"
+                "Forecast Sales / 予測販売数",
+                f"{forecast_qty:.0f} servings",
+                delta=f"Avg: {avg_monthly_qty:.0f}" if abs(forecast_qty - avg_monthly_qty) > 5 else None
             )
         
         with col2:
@@ -1088,20 +1199,22 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
             st.metric(
                 "🎯 Recommended Order / 推奨発注量",
                 f"{recommended_order_g:.0f} g ({recommended_order_units:.0f} units)",
-                delta=f"+{safety_stock*100:.0f}% safety stock",
+                delta=f"+{safety_stock_pct*100:.0f}% safety stock",
                 delta_color="normal"
             )
         
-        # Monthly trend chart
-        if len(caviar_monthly) > 1:
+        # Monthly trend chart with forecast line
+        if len(caviar_monthly) > 0:
             trend_df = caviar_monthly.reset_index()
             trend_df.columns = ['Month', 'Qty Sold']
             trend_df['Month'] = trend_df['Month'].astype(str)
             
             fig = px.bar(trend_df, x='Month', y='Qty Sold',
                         title="Monthly Caviar Sales / 月別キャビア販売数")
-            fig.add_hline(y=avg_monthly_qty, line_dash="dash", line_color="red",
+            fig.add_hline(y=avg_monthly_qty, line_dash="dash", line_color="gray",
                          annotation_text=f"Avg: {avg_monthly_qty:.0f}")
+            fig.add_hline(y=forecast_qty, line_dash="solid", line_color="green",
+                         annotation_text=f"Forecast: {forecast_qty:.0f}")
             st.plotly_chart(fig, use_container_width=True)
         
         # Cost estimation
@@ -1126,24 +1239,29 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     
     summary_data = []
     
-    if not beef_sales.empty:
-        beef_monthly = beef_sales.groupby('month')['qty'].sum()
-        avg_beef = beef_monthly.mean()
-        raw_beef_kg = (avg_beef * beef_per_serving / beef_yield / 1000) * (1 + safety_stock)
+    # Recalculate for summary using the same forecast method
+    beef_sales_sum = sales_df_copy[sales_df_copy['name'].str.contains('Beef Tenderloin', case=False, na=False)]
+    if not beef_sales_sum.empty:
+        beef_monthly_sum = beef_sales_sum.groupby('month')['qty'].sum()
+        forecast_beef = calculate_forecast_qty(beef_monthly_sum, forecast_method)
+        avg_beef = beef_monthly_sum.mean()
+        raw_beef_kg = (forecast_beef * beef_per_serving / beef_yield / 1000) * (1 + safety_stock_pct)
         summary_data.append({
             'Item / 品目': '🥩 Beef Tenderloin / 和牛ヒレ',
-            'Avg Monthly Sales / 月平均販売': f"{avg_beef:.0f}",
+            'Forecast Sales / 予測販売': f"{forecast_beef:.0f}",
             'Recommended Order / 推奨発注': f"{raw_beef_kg:.1f} kg",
             'Yield / 歩留まり': f"{beef_yield*100:.0f}%"
         })
     
-    if not caviar_sales.empty:
-        caviar_monthly = caviar_sales.groupby('month')['qty'].sum()
-        avg_caviar = caviar_monthly.mean()
-        raw_caviar_g = (avg_caviar * caviar_per_serving / caviar_yield) * (1 + safety_stock)
+    caviar_sales_sum = sales_df_copy[sales_df_copy['name'].str.contains('Egg Toast Caviar', case=False, na=False)]
+    if not caviar_sales_sum.empty:
+        caviar_monthly_sum = caviar_sales_sum.groupby('month')['qty'].sum()
+        forecast_caviar = calculate_forecast_qty(caviar_monthly_sum, forecast_method)
+        avg_caviar = caviar_monthly_sum.mean()
+        raw_caviar_g = (forecast_caviar * caviar_per_serving / caviar_yield) * (1 + safety_stock_pct)
         summary_data.append({
             'Item / 品目': '🐟 Caviar / キャビア',
-            'Avg Monthly Sales / 月平均販売': f"{avg_caviar:.0f}",
+            'Forecast Sales / 予測販売': f"{forecast_caviar:.0f}",
             'Recommended Order / 推奨発注': f"{raw_caviar_g:.0f} g ({raw_caviar_g/100:.0f} units)",
             'Yield / 歩留まり': f"{caviar_yield*100:.0f}%"
         })
@@ -1151,7 +1269,7 @@ def display_forecasting(sales_df, invoices_df, beef_per_serving, caviar_per_serv
     if summary_data:
         st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
         
-        st.caption(f"※ Includes {safety_stock*100:.0f}% safety stock buffer / 安全在庫{safety_stock*100:.0f}%含む")
+        st.caption(f"※ Method: {forecast_method} | Safety Stock: {safety_stock_pct*100:.0f}%")
 
 
 def display_vendor_items(invoices_df):
