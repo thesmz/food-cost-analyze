@@ -22,22 +22,10 @@ st.markdown("*Build menus by calculating dish costs from ingredient breakdowns*"
 # SESSION STATE INITIALIZATION
 # =============================================================================
 if 'pantry' not in st.session_state:
-    # Pre-populated pantry with common ingredients
+    # Start with empty pantry - user adds their own real prices
+    # Only include items if we have actual invoice data
     st.session_state.pantry = {
-        'Beef Tenderloin': {'cost_per_unit': 12000, 'unit': 'kg'},
-        'Caviar (Kaviari)': {'cost_per_unit': 38000, 'unit': '100g'},
-        'Foie Gras': {'cost_per_unit': 8000, 'unit': 'kg'},
-        'Sea Urchin': {'cost_per_unit': 5000, 'unit': '100g'},
-        'Truffle (Black)': {'cost_per_unit': 15000, 'unit': '100g'},
-        'Wagyu A5': {'cost_per_unit': 25000, 'unit': 'kg'},
-        'Salmon': {'cost_per_unit': 3500, 'unit': 'kg'},
-        'Duck Breast': {'cost_per_unit': 4500, 'unit': 'kg'},
-        'Lobster': {'cost_per_unit': 6000, 'unit': 'kg'},
-        'Vegetables (Mixed)': {'cost_per_unit': 800, 'unit': 'kg'},
-        'Rice': {'cost_per_unit': 500, 'unit': 'kg'},
-        'Butter': {'cost_per_unit': 2000, 'unit': 'kg'},
-        'Cream': {'cost_per_unit': 1200, 'unit': 'L'},
-        'Eggs': {'cost_per_unit': 50, 'unit': 'pc'},
+        # Add your ingredients here with real costs from invoices
     }
 
 if 'saved_dishes' not in st.session_state:
@@ -132,12 +120,15 @@ def add_to_pantry(name, cost, unit):
 # =============================================================================
 with st.sidebar:
     st.header("📦 Ingredient Pantry")
-    st.caption("Pre-saved ingredients for quick access")
+    st.caption("Save frequently used ingredients for quick access")
     
     # Display pantry
-    with st.expander("View Pantry", expanded=False):
-        for name, info in st.session_state.pantry.items():
-            st.caption(f"**{name}**: ¥{info['cost_per_unit']:,}/{info['unit']}")
+    if st.session_state.pantry:
+        with st.expander("View Pantry", expanded=False):
+            for name, info in st.session_state.pantry.items():
+                st.caption(f"**{name}**: ¥{info['cost_per_unit']:,}/{info['unit']}")
+    else:
+        st.info("Pantry is empty. Add ingredients below using real costs from your invoices.")
     
     # Add to pantry
     with st.expander("➕ Add to Pantry", expanded=False):
