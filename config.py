@@ -54,7 +54,7 @@ DISH_INGREDIENT_MAP = {
     'Beef Tenderloin': {
         'ingredient': '和牛ヒレ',
         'vendor': 'hirayama',
-        'usage_per_serving': 180,  # grams (cooked portion)
+        'usage_per_serving': 150,  # grams (cooked portion) - updated default
         'unit': 'g',
         'yield_percent': 0.65,  # 65% yield after trimming (35% loss from fat, sinew, etc.)
         'selling_price': 5682,  # yen (dinner course allocation)
@@ -63,7 +63,7 @@ DISH_INGREDIENT_MAP = {
     'Egg Toast Caviar': {
         'ingredient': 'KAVIARI キャビア',
         'vendor': 'french_fnb',
-        'usage_per_serving': 15,  # grams per serving
+        'usage_per_serving': 10,  # grams per serving - updated default
         'unit': 'g',
         'yield_percent': 1.0,  # 100% yield (no loss)
         'selling_price': 3247,  # yen (course item estimate)
