@@ -1,13 +1,20 @@
 """
 Dynamic Recipe & Menu Costing Tool
 Build menus from scratch by calculating dish costs from ingredient breakdowns.
-No hardcoded menus - fully dynamic session-based tool.
+Pantry auto-populated from actual invoice data.
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
+import sys
+import os
+
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from database import init_supabase, load_invoices, get_date_range
 
 st.set_page_config(
     page_title="Recipe & Menu Costing | The Shinmonzen",
@@ -19,14 +26,83 @@ st.title("🍽️ Recipe & Menu Costing Tool")
 st.markdown("*Build menus by calculating dish costs from ingredient breakdowns*")
 
 # =============================================================================
+# LOAD INVOICE DATA FOR PANTRY
+# =============================================================================
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def load_pantry_from_invoices():
+    """Load ingredient prices from actual invoice data"""
+    supabase = init_supabase()
+    if not supabase:
+        return {}
+    
+    db_min, db_max = get_date_range(supabase)
+    if not db_min or not db_max:
+        return {}
+    
+    invoices_df = load_invoices(supabase, db_min, db_max)
+    if invoices_df.empty:
+        return {}
+    
+    # Group by item and calculate average unit price
+    pantry = {}
+    
+    # Group by item_name to get average prices
+    item_summary = invoices_df.groupby(['item_name', 'vendor']).agg({
+        'quantity': 'sum',
+        'amount': 'sum',
+        'unit': 'first'
+    }).reset_index()
+    
+    for _, row in item_summary.iterrows():
+        item_name = row['item_name']
+        vendor = row['vendor']
+        total_qty = row['quantity']
+        total_amount = row['amount']
+        unit = row['unit'] if pd.notna(row['unit']) else 'unit'
+        
+        # Calculate unit price
+        if total_qty > 0:
+            unit_price = total_amount / total_qty
+        else:
+            unit_price = total_amount
+        
+        # Determine unit type from item name or unit field
+        if 'kg' in str(unit).lower() or 'kg' in item_name.lower():
+            unit_type = 'kg'
+        elif '100g' in item_name or '100g' in str(unit):
+            unit_type = '100g'
+        elif 'g' in str(unit).lower() and 'kg' not in str(unit).lower():
+            unit_type = 'g'
+        elif 'ml' in str(unit).lower() or 'ml' in item_name.lower():
+            unit_type = 'ml'
+        elif 'l' in str(unit).lower() or 'L' in str(unit):
+            unit_type = 'L'
+        elif 'pc' in str(unit).lower() or '個' in str(unit):
+            unit_type = 'pc'
+        else:
+            unit_type = 'unit'
+        
+        # Create display name with vendor
+        display_name = f"{item_name} ({vendor})"
+        
+        pantry[display_name] = {
+            'cost_per_unit': round(unit_price),
+            'unit': unit_type,
+            'vendor': vendor,
+            'original_name': item_name
+        }
+    
+    return pantry
+
+# =============================================================================
 # SESSION STATE INITIALIZATION
 # =============================================================================
+# Load pantry from actual invoice data
 if 'pantry' not in st.session_state:
-    # Start with empty pantry - user adds their own real prices
-    # Only include items if we have actual invoice data
-    st.session_state.pantry = {
-        # Add your ingredients here with real costs from invoices
-    }
+    st.session_state.pantry = load_pantry_from_invoices()
+
+if 'custom_pantry' not in st.session_state:
+    st.session_state.custom_pantry = {}  # User-added items
 
 if 'saved_dishes' not in st.session_state:
     st.session_state.saved_dishes = []  # List of {name, cost, ingredients}
@@ -104,15 +180,16 @@ def remove_dish_from_menu(idx):
 
 
 def reset_all():
-    """Clear all session data"""
+    """Clear dishes and custom pantry, but keep invoice-loaded pantry"""
     st.session_state.saved_dishes = []
     st.session_state.current_dish_ingredients = []
+    st.session_state.custom_pantry = {}
     st.session_state.selling_price = 24000 if st.session_state.menu_type == 'Dinner' else 8500
 
 
 def add_to_pantry(name, cost, unit):
-    """Add new ingredient to pantry"""
-    st.session_state.pantry[name] = {'cost_per_unit': cost, 'unit': unit}
+    """Add new ingredient to custom pantry"""
+    st.session_state.custom_pantry[name] = {'cost_per_unit': cost, 'unit': unit, 'vendor': 'Custom'}
 
 
 # =============================================================================
@@ -120,18 +197,39 @@ def add_to_pantry(name, cost, unit):
 # =============================================================================
 with st.sidebar:
     st.header("📦 Ingredient Pantry")
-    st.caption("Save frequently used ingredients for quick access")
+    st.caption("Auto-loaded from your invoice data")
     
-    # Display pantry
-    if st.session_state.pantry:
-        with st.expander("View Pantry", expanded=False):
-            for name, info in st.session_state.pantry.items():
-                st.caption(f"**{name}**: ¥{info['cost_per_unit']:,}/{info['unit']}")
+    # Combine invoice pantry and custom pantry
+    all_pantry = {**st.session_state.pantry, **st.session_state.custom_pantry}
+    
+    # Display pantry grouped by vendor
+    if all_pantry:
+        # Group by vendor
+        vendors = {}
+        for name, info in all_pantry.items():
+            vendor = info.get('vendor', 'Unknown')
+            if vendor not in vendors:
+                vendors[vendor] = []
+            vendors[vendor].append((name, info))
+        
+        with st.expander(f"View Pantry ({len(all_pantry)} items)", expanded=False):
+            for vendor, items in sorted(vendors.items()):
+                st.markdown(f"**{vendor}**")
+                for name, info in items:
+                    # Show shorter name without vendor suffix for display
+                    display_name = info.get('original_name', name)
+                    st.caption(f"• {display_name}: ¥{info['cost_per_unit']:,}/{info['unit']}")
+                st.divider()
     else:
-        st.info("Pantry is empty. Add ingredients below using real costs from your invoices.")
+        st.warning("No invoice data found. Upload invoices in the main app first.")
     
-    # Add to pantry
-    with st.expander("➕ Add to Pantry", expanded=False):
+    # Refresh button
+    if st.button("🔄 Refresh from Invoices"):
+        st.session_state.pantry = load_pantry_from_invoices()
+        st.rerun()
+    
+    # Add custom ingredient
+    with st.expander("➕ Add Custom Ingredient", expanded=False):
         new_pantry_name = st.text_input("Ingredient Name", key="pantry_name")
         new_pantry_cost = st.number_input("Cost per Unit (¥)", min_value=0, value=1000, key="pantry_cost")
         new_pantry_unit = st.selectbox("Unit", ['kg', 'g', '100g', 'L', 'ml', 'pc'], key="pantry_unit")
@@ -161,10 +259,11 @@ with col1:
     dish_name = st.text_input("Dish Name / 料理名", placeholder="e.g., Seasonal Fish Course")
 
 with col2:
-    # Quick-fill from pantry
+    # Quick-fill from pantry (combined invoice + custom)
+    all_pantry = {**st.session_state.pantry, **st.session_state.custom_pantry}
     pantry_selection = st.selectbox(
         "Quick-fill from Pantry",
-        options=["-- Select --"] + list(st.session_state.pantry.keys())
+        options=["-- Select --"] + list(all_pantry.keys())
     )
 
 # Ingredient input form
@@ -172,12 +271,15 @@ st.subheader("Add Ingredients / 材料を追加")
 
 cols = st.columns([3, 2, 1.5, 1.5, 1.5, 1])
 
+# Get combined pantry for auto-fill
+all_pantry = {**st.session_state.pantry, **st.session_state.custom_pantry}
+
 with cols[0]:
     # Auto-fill if pantry item selected
     if pantry_selection and pantry_selection != "-- Select --":
-        default_name = pantry_selection
-        default_cost = st.session_state.pantry[pantry_selection]['cost_per_unit']
-        default_unit = st.session_state.pantry[pantry_selection]['unit']
+        default_name = all_pantry[pantry_selection].get('original_name', pantry_selection)
+        default_cost = all_pantry[pantry_selection]['cost_per_unit']
+        default_unit = all_pantry[pantry_selection]['unit']
     else:
         default_name = ""
         default_cost = 1000
@@ -415,4 +517,5 @@ else:
 # FOOTER
 # =============================================================================
 st.divider()
-st.caption(f"Session started: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Dishes: {len(st.session_state.saved_dishes)} | Pantry items: {len(st.session_state.pantry)}")
+all_pantry_count = len(st.session_state.pantry) + len(st.session_state.custom_pantry)
+st.caption(f"Session started: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Dishes: {len(st.session_state.saved_dishes)} | Pantry items: {all_pantry_count} (from invoices)")
