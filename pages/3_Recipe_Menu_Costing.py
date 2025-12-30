@@ -1,7 +1,7 @@
 """
 Dynamic Recipe & Menu Costing Tool
 Build menus from scratch by calculating dish costs from ingredient breakdowns.
-Pantry auto-populated from actual invoice data.
+Pantry auto-populated from actual invoice data with AI-translated names.
 """
 
 import streamlit as st
@@ -10,6 +10,8 @@ import plotly.express as px
 from datetime import datetime
 import sys
 import os
+import re
+import json
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,6 +26,79 @@ st.set_page_config(
 
 st.title("🍽️ Recipe & Menu Costing Tool")
 st.markdown("*Build menus by calculating dish costs from ingredient breakdowns*")
+
+
+# =============================================================================
+# AI TRANSLATION FUNCTION
+# =============================================================================
+def translate_ingredient_names(items_dict):
+    """Use Claude API to translate Japanese ingredient names to English"""
+    import requests
+    
+    if not items_dict:
+        return items_dict
+    
+    # Get API key from Streamlit secrets
+    try:
+        api_key = st.secrets.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return items_dict  # Return original if no API key
+    except:
+        return items_dict
+    
+    # Prepare the list of names to translate
+    names_to_translate = list(items_dict.keys())
+    
+    prompt = f"""Translate these Japanese food ingredient names to English. Return ONLY a JSON object mapping original name to English translation. Keep brand names (like KAVIARI) as-is. Be concise.
+
+Names to translate:
+{json.dumps(names_to_translate, ensure_ascii=False, indent=2)}
+
+Return format example:
+{{"生　ジロール　１ｋｇ": "Fresh Girolles (Chanterelles) 1kg", "KAVIARI　キャビア クリスタル100g": "KAVIARI Crystal Caviar 100g"}}
+
+JSON response:"""
+
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01"
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 2000,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            content = result['content'][0]['text']
+            
+            # Parse JSON from response
+            # Try to extract JSON if wrapped in markdown
+            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+            if json_match:
+                translations = json.loads(json_match.group())
+                
+                # Apply translations
+                translated_dict = {}
+                for orig_name, info in items_dict.items():
+                    eng_name = translations.get(orig_name, orig_name)
+                    info['english_name'] = eng_name
+                    info['original_name'] = orig_name
+                    translated_dict[orig_name] = info
+                
+                return translated_dict
+    except Exception as e:
+        st.sidebar.warning(f"Translation skipped: {str(e)[:50]}")
+    
+    return items_dict
+
 
 # =============================================================================
 # LOAD INVOICE DATA FOR PANTRY
@@ -43,63 +118,70 @@ def load_pantry_from_invoices():
     if invoices_df.empty:
         return {}
     
-    # Group by item and calculate average unit price
     pantry = {}
     
-    # Group by item_name to get average prices
-    item_summary = invoices_df.groupby(['item_name', 'vendor']).agg({
-        'quantity': 'sum',
-        'amount': 'sum',
-        'unit': 'first'
-    }).reset_index()
-    
-    for _, row in item_summary.iterrows():
-        item_name = row['item_name']
-        vendor = row['vendor']
-        total_qty = row['quantity']
-        total_amount = row['amount']
-        unit = row['unit'] if pd.notna(row['unit']) else 'unit'
+    # Group by item_name and vendor, use AVERAGE unit price (not total/qty)
+    for (item_name, vendor), group in invoices_df.groupby(['item_name', 'vendor']):
+        # Skip shipping/delivery fees
+        if '運賃' in str(item_name) or '送料' in str(item_name) or '宅配' in str(item_name):
+            continue
         
-        # Calculate unit price
-        if total_qty > 0:
-            unit_price = total_amount / total_qty
+        # Get unit price - use the most common unit_price, or calculate from amount/quantity
+        if 'unit_price' in group.columns and group['unit_price'].notna().any():
+            # Use the actual unit price from invoice
+            unit_price = group['unit_price'].dropna().median()
         else:
-            unit_price = total_amount
+            # Fallback: calculate from totals
+            total_amt = group['amount'].sum()
+            total_qty = group['quantity'].sum()
+            unit_price = total_amt / total_qty if total_qty > 0 else total_amt
         
-        # Determine unit type from item name or unit field
-        if 'kg' in str(unit).lower() or 'kg' in item_name.lower():
+        # Determine unit type from the data
+        unit_raw = group['unit'].iloc[0] if 'unit' in group.columns and pd.notna(group['unit'].iloc[0]) else ''
+        unit_str = str(unit_raw).lower()
+        
+        # Map Japanese units to standard units
+        if unit_str in ['kg', 'ｋｇ']:
             unit_type = 'kg'
-        elif '100g' in item_name or '100g' in str(unit):
-            unit_type = '100g'
-        elif 'g' in str(unit).lower() and 'kg' not in str(unit).lower():
+        elif unit_str in ['g', 'ｇ']:
             unit_type = 'g'
-        elif 'ml' in str(unit).lower() or 'ml' in item_name.lower():
-            unit_type = 'ml'
-        elif 'l' in str(unit).lower() or 'L' in str(unit):
+        elif '100g' in item_name.lower() or '100g' in unit_str:
+            unit_type = '100g'
+        elif unit_str in ['l', 'ｌ', 'リットル']:
             unit_type = 'L'
-        elif 'pc' in str(unit).lower() or '個' in str(unit):
+        elif unit_str in ['ml', 'ｍｌ']:
+            unit_type = 'ml'
+        elif unit_str in ['本', '缶', 'pc', 'ｐｃ', '個']:
             unit_type = 'pc'
         else:
             unit_type = 'unit'
         
-        # Create display name with vendor
-        display_name = f"{item_name} ({vendor})"
+        # Clean up item name for display key
+        display_key = f"{item_name}"
         
-        pantry[display_name] = {
+        pantry[display_key] = {
             'cost_per_unit': round(unit_price),
             'unit': unit_type,
             'vendor': vendor,
-            'original_name': item_name
+            'original_name': item_name,
+            'english_name': None  # Will be filled by translation
         }
     
     return pantry
+
+
+@st.cache_data(ttl=3600)  # Cache translations for 1 hour
+def get_translated_pantry(pantry_dict):
+    """Get pantry with translated names (cached)"""
+    return translate_ingredient_names(pantry_dict)
 
 # =============================================================================
 # SESSION STATE INITIALIZATION
 # =============================================================================
 # Load pantry from actual invoice data
 if 'pantry' not in st.session_state:
-    st.session_state.pantry = load_pantry_from_invoices()
+    raw_pantry = load_pantry_from_invoices()
+    st.session_state.pantry = get_translated_pantry(raw_pantry)
 
 if 'custom_pantry' not in st.session_state:
     st.session_state.custom_pantry = {}  # User-added items
@@ -214,19 +296,34 @@ with st.sidebar:
         
         with st.expander(f"View Pantry ({len(all_pantry)} items)", expanded=False):
             for vendor, items in sorted(vendors.items()):
-                st.markdown(f"**{vendor}**")
+                st.markdown(f"**🏪 {vendor}**")
                 for name, info in items:
-                    # Show shorter name without vendor suffix for display
-                    display_name = info.get('original_name', name)
-                    st.caption(f"• {display_name}: ¥{info['cost_per_unit']:,}/{info['unit']}")
+                    # Show English name if available, otherwise original
+                    eng_name = info.get('english_name')
+                    orig_name = info.get('original_name', name)
+                    
+                    if eng_name and eng_name != orig_name:
+                        display_name = f"**{eng_name}**"
+                        st.markdown(f"• {display_name}: ¥{info['cost_per_unit']:,}/{info['unit']}")
+                        st.caption(f"  _{orig_name}_")
+                    else:
+                        st.markdown(f"• {orig_name}: ¥{info['cost_per_unit']:,}/{info['unit']}")
                 st.divider()
     else:
         st.warning("No invoice data found. Upload invoices in the main app first.")
     
     # Refresh button
-    if st.button("🔄 Refresh from Invoices"):
-        st.session_state.pantry = load_pantry_from_invoices()
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Refresh"):
+            raw_pantry = load_pantry_from_invoices()
+            st.session_state.pantry = get_translated_pantry(raw_pantry)
+            st.rerun()
+    with col2:
+        if st.button("🌐 Translate"):
+            st.session_state.pantry = get_translated_pantry(st.session_state.pantry)
+            st.cache_data.clear()
+            st.rerun()
     
     # Add custom ingredient
     with st.expander("➕ Add Custom Ingredient", expanded=False):
@@ -261,9 +358,27 @@ with col1:
 with col2:
     # Quick-fill from pantry (combined invoice + custom)
     all_pantry = {**st.session_state.pantry, **st.session_state.custom_pantry}
+    
+    # Create display names for dropdown (show English if available)
+    pantry_keys = list(all_pantry.keys())
+    
+    def format_pantry_option(key):
+        if key == "-- Select --":
+            return key
+        info = all_pantry.get(key, {})
+        eng = info.get('english_name')
+        orig = info.get('original_name', key)
+        price = info.get('cost_per_unit', 0)
+        unit = info.get('unit', '')
+        if eng and eng != orig:
+            return f"{eng} - ¥{price:,}/{unit}"
+        else:
+            return f"{orig} - ¥{price:,}/{unit}"
+    
     pantry_selection = st.selectbox(
         "Quick-fill from Pantry",
-        options=["-- Select --"] + list(all_pantry.keys())
+        options=["-- Select --"] + sorted(pantry_keys),
+        format_func=format_pantry_option
     )
 
 # Ingredient input form
@@ -276,10 +391,12 @@ all_pantry = {**st.session_state.pantry, **st.session_state.custom_pantry}
 
 with cols[0]:
     # Auto-fill if pantry item selected
-    if pantry_selection and pantry_selection != "-- Select --":
-        default_name = all_pantry[pantry_selection].get('original_name', pantry_selection)
-        default_cost = all_pantry[pantry_selection]['cost_per_unit']
-        default_unit = all_pantry[pantry_selection]['unit']
+    if pantry_selection and pantry_selection != "-- Select --" and pantry_selection in all_pantry:
+        selected_info = all_pantry[pantry_selection]
+        # Use English name if available for the input field
+        default_name = selected_info.get('english_name') or selected_info.get('original_name', pantry_selection)
+        default_cost = selected_info['cost_per_unit']
+        default_unit = selected_info['unit']
     else:
         default_name = ""
         default_cost = 1000
