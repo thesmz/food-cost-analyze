@@ -146,15 +146,13 @@ BEVERAGE_CATEGORIES = [
 # =============================================================================
 # A LA CARTE ITEMS - For Menu Engineering analysis
 # =============================================================================
-# NOTE: Costs are estimates - update with actual invoice data
+# NOTE: Costs should be calculated from actual recipes, not hardcoded!
+# The Menu Engineering page now uses:
+# 1. User-adjustable default percentage (slider)
+# 2. Custom costs entered by user for specific items
+# NO FAKE HARDCODED VALUES HERE
 A_LA_CARTE_ITEMS = {
-    'Beef Tenderloin': {'cost': 1800, 'price': 5682},
-    'Egg Toast Caviar': {'cost': 1950, 'price': 3247},
-    'Snow Crab Dumpling': {'cost': 800, 'price': 2800},
-    'Sea Urchin, Black Bread': {'cost': 1200, 'price': 4200},
-    'Roasted Amadai': {'cost': 1100, 'price': 4500},
-    # Default cost percentage for items not in this list
-    'default_cost_pct': 0.30  # 30% food cost assumed
+    # Empty - costs are calculated dynamically or entered by user
 }
 
 # =============================================================================
