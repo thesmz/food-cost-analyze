@@ -226,13 +226,16 @@ def main():
                     current_file += 1
                     progress_bar.progress(current_file / total_files, text=f"Processing {file.name}...")
                     df = extract_sales_data(file)
-                    if not df.empty:
+                    if isinstance(df, pd.DataFrame) and not df.empty:
                         sales_list.append(df)
-                if sales_list:
+                if len(sales_list) > 0:
                     new_sales = pd.concat(sales_list, ignore_index=True)
                     if supabase:
                         save_sales(supabase, new_sales)
-                    sales_df = pd.concat([sales_df, new_sales], ignore_index=True) if not sales_df.empty else new_sales
+                    if sales_df.empty:
+                        sales_df = new_sales
+                    else:
+                        sales_df = pd.concat([sales_df, new_sales], ignore_index=True)
                     sales_count = len(new_sales)
             
             if invoice_files:
@@ -242,14 +245,21 @@ def main():
                     progress_bar.progress(current_file / total_files, text=f"Processing {file.name}...")
                     # extract_invoice_data returns a LIST, not DataFrame
                     records = extract_invoice_data(file)
-                    if records and len(records) > 0:
+                    # Handle both list and DataFrame returns
+                    if isinstance(records, pd.DataFrame):
+                        if not records.empty:
+                            invoice_records.extend(records.to_dict('records'))
+                    elif isinstance(records, list) and len(records) > 0:
                         invoice_records.extend(records)
                 
-                if invoice_records:
+                if len(invoice_records) > 0:
                     new_invoices = pd.DataFrame(invoice_records)
                     if supabase:
                         save_invoices(supabase, new_invoices)
-                    invoices_df = pd.concat([invoices_df, new_invoices], ignore_index=True) if not invoices_df.empty else new_invoices
+                    if invoices_df.empty:
+                        invoices_df = new_invoices
+                    else:
+                        invoices_df = pd.concat([invoices_df, new_invoices], ignore_index=True)
                     invoice_count = len(new_invoices)
             
             progress_bar.progress(1.0, text="Complete!")
