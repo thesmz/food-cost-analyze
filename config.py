@@ -4,6 +4,72 @@ Contains vendor patterns, menu items, and analysis settings.
 """
 
 # =============================================================================
+# VENDOR NAME MAPPING - Japanese to Clean English Names
+# =============================================================================
+VENDOR_NAME_MAP = {
+    # Meat & Fish
+    'ミートショップひら山': 'Meat Shop Hirayama',
+    'ひら山': 'Meat Shop Hirayama',
+    '株式会社 丸弥太': 'Maruyata',
+    '丸弥太': 'Maruyata',
+    '有限会社浅見水産': 'Asami Suisan',
+    '浅見水産': 'Asami Suisan',
+    '洛北ジビエ イマイ': 'Gibier Imai',
+    
+    # Dairy & Cheese
+    '新利根チーズ工房': 'Cheese Kobo',
+    'タカナシ販売株式会社': 'Takanashi',
+    '有限会社レチェール・ユゲ': 'Yuge Farm',
+    
+    # Produce & Vegetables
+    '株式会社ポモナファーム': 'Pomona Farm',
+    '株式会社ミナト　青果事業部': 'Minato Seika',
+    '株式会社ミナト': 'Minato',
+    '万松青果株式会社': 'Manmatsu',
+    
+    # Specialty Foods
+    'フレンチ・エフ・アンド・ビー': 'French F&B Japan',
+    'French F&B': 'French F&B Japan',
+    '株式会社 LIBERTE JAPON': 'Liberte Japon',
+    'LIBERTE JAPON': 'Liberte Japon',
+    '株式会社 有徳島庄蔵卸月浦明堂': 'Nezu Matsumoto',
+    'ＡＳＩＡＭＩＸ株式会社': 'Asiamix',
+    
+    # Rice & Bread
+    '株式会社八代目儀兵衛': 'Hachidaime Gihei',
+    '株式会社進々堂': 'Shinshindo',
+    
+    # Meat (Premium)
+    '株式会社銀閣寺大西': 'Ginkakuji Onishi',
+    
+    # Other Suppliers
+    '池伝株式会社　大阪支店': 'Ikeden',
+    '池伝株式会社': 'Ikeden',
+    'ＷＩＳＫジャパン株式会社': 'WISK Japan',
+}
+
+def get_clean_vendor_name(vendor_name: str) -> str:
+    """Convert Japanese vendor name to clean English name"""
+    if not vendor_name:
+        return 'Unknown'
+    
+    # Direct lookup
+    if vendor_name in VENDOR_NAME_MAP:
+        return VENDOR_NAME_MAP[vendor_name]
+    
+    # Partial match - check if any key is contained in the vendor name
+    for jp_name, en_name in VENDOR_NAME_MAP.items():
+        if jp_name in vendor_name or vendor_name in jp_name:
+            return en_name
+    
+    # If already looks like English, return as-is
+    if all(ord(c) < 128 or c in ' ・' for c in vendor_name[:10]):
+        return vendor_name
+    
+    return vendor_name  # Return original if no match
+
+
+# =============================================================================
 # VENDOR CONFIGURATION - Item patterns for invoice matching
 # =============================================================================
 VENDOR_CONFIG = {
