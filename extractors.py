@@ -159,7 +159,7 @@ Extract all items now:"""
             },
             json={
                 "model": "claude-sonnet-4-20250514",
-                "max_tokens": 4000,
+                "max_tokens": 8000,  # Increased to handle large invoices
                 "messages": [{"role": "user", "content": message_content}]
             },
             timeout=120
@@ -171,8 +171,15 @@ Extract all items now:"""
             debug_log(f"   → ❌ API error: {response.text[:500]}")
             return []
         
-        # Parse response
+        # Parse response and check for truncation
         result = response.json()
+        
+        # Check if response was truncated
+        stop_reason = result.get('stop_reason', 'unknown')
+        debug_log(f"   → Stop reason: {stop_reason}")
+        if stop_reason == 'max_tokens':
+            debug_log(f"   → ⚠️ Response was TRUNCATED (hit max_tokens)")
+        
         content = result['content'][0]['text'].strip()
         debug_log(f"   → Response length: {len(content)} chars")
         
@@ -181,21 +188,77 @@ Extract all items now:"""
             content = re.sub(r'^```(?:json)?\s*', '', content)
             content = re.sub(r'\s*```$', '', content)
         
-        # Parse JSON
+        # Parse JSON with robust error handling for truncated responses
+        data = None
+        
+        # Method 1: Try direct parse
         try:
             data = json.loads(content)
-            debug_log(f"   → JSON parsed successfully")
+            debug_log(f"   → JSON parsed successfully (direct)")
         except json.JSONDecodeError as e:
-            debug_log(f"   → JSON parse error: {e}")
-            # Try to find JSON in response
-            json_match = re.search(r'\{[\s\S]*\}', content)
-            if json_match:
-                data = json.loads(json_match.group())
-                debug_log(f"   → Found JSON via regex")
-            else:
-                debug_log(f"   → ❌ Could not parse response as JSON")
-                debug_log(f"   → Response preview: {content[:300]}")
-                return []
+            debug_log(f"   → JSON parse error at char {e.pos}: {e.msg}")
+        
+        # Method 2: Try to repair truncated JSON by extracting complete items
+        if data is None:
+            debug_log(f"   → Attempting JSON repair for truncated response...")
+            try:
+                # Extract vendor_name and invoice_date
+                vendor_match = re.search(r'"vendor_name"\s*:\s*"([^"]*)"', content)
+                date_match = re.search(r'"invoice_date"\s*:\s*"([^"]*)"', content)
+                
+                vendor_name_extracted = vendor_match.group(1) if vendor_match else 'Unknown Vendor'
+                invoice_date_extracted = date_match.group(1) if date_match else datetime.now().strftime('%Y-%m-%d')
+                
+                debug_log(f"   → Extracted vendor: {vendor_name_extracted}")
+                debug_log(f"   → Extracted date: {invoice_date_extracted}")
+                
+                # Find individual item objects using regex
+                # Pattern matches complete JSON objects for items
+                item_pattern = r'\{\s*"date"\s*:\s*"[^"]*"\s*,\s*"item_name"\s*:\s*"[^"]*"\s*,\s*"quantity"\s*:\s*[\d.]+\s*,\s*"unit"\s*:\s*"[^"]*"\s*,\s*"unit_price"\s*:\s*[\d.]+\s*,\s*"amount"\s*:\s*[\d.]+\s*\}'
+                
+                items = []
+                for match in re.finditer(item_pattern, content):
+                    try:
+                        item = json.loads(match.group())
+                        items.append(item)
+                    except:
+                        pass
+                
+                debug_log(f"   → Found {len(items)} complete items via regex")
+                
+                if items:
+                    data = {
+                        'vendor_name': vendor_name_extracted,
+                        'invoice_date': invoice_date_extracted,
+                        'items': items
+                    }
+                    debug_log(f"   → JSON repaired successfully!")
+                    
+            except Exception as repair_error:
+                debug_log(f"   → JSON repair failed: {repair_error}")
+        
+        # Method 3: Try to fix by closing brackets
+        if data is None:
+            debug_log(f"   → Trying bracket closure fix...")
+            try:
+                # Find last complete item (ends with },)
+                last_complete = content.rfind('},')
+                if last_complete > 0:
+                    # Close the JSON structure
+                    fixed_content = content[:last_complete+1] + ']}'
+                    try:
+                        data = json.loads(fixed_content)
+                        debug_log(f"   → Fixed by closing brackets, got {len(data.get('items', []))} items")
+                    except json.JSONDecodeError:
+                        pass
+            except Exception as fix_error:
+                debug_log(f"   → Bracket fix failed: {fix_error}")
+        
+        if data is None:
+            debug_log(f"   → ❌ All JSON parsing methods failed")
+            debug_log(f"   → Response start: {content[:300]}")
+            debug_log(f"   → Response end: {content[-300:]}")
+            return []
         
         # Convert to our record format
         records = []
