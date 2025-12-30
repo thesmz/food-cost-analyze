@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 
 # Import our modules
-from extractors import extract_sales_data, extract_invoice_data
+from extractors import extract_sales_data, extract_invoice_data, get_debug_log
 from config import VENDOR_CONFIG, YIELD_RATES, THRESHOLDS
 from database import (
     init_supabase, save_invoices, save_sales, 
@@ -212,9 +212,13 @@ def main():
     
     # Process uploaded files with error handling and progress bar
     if sales_files or invoice_files:
+        # Create a debug expander to show extraction details
+        debug_expander = st.expander("🔍 Processing Debug Log", expanded=True)
+        
         try:
             sales_count = 0
             invoice_count = 0
+            debug_messages = []
             
             total_files = len(sales_files or []) + len(invoice_files or [])
             progress_bar = st.progress(0, text="Processing files...")
@@ -225,58 +229,109 @@ def main():
                 for file in sales_files:
                     current_file += 1
                     progress_bar.progress(current_file / total_files, text=f"Processing {file.name}...")
+                    debug_messages.append(f"📄 Processing sales file: {file.name}")
+                    
                     df = extract_sales_data(file)
-                    if isinstance(df, pd.DataFrame) and not df.empty:
-                        sales_list.append(df)
+                    
+                    if isinstance(df, pd.DataFrame):
+                        debug_messages.append(f"   → Returned DataFrame with {len(df)} rows")
+                        if not df.empty:
+                            sales_list.append(df)
+                    else:
+                        debug_messages.append(f"   → Returned: {type(df)}")
+                
                 if len(sales_list) > 0:
                     new_sales = pd.concat(sales_list, ignore_index=True)
+                    debug_messages.append(f"✅ Total sales records extracted: {len(new_sales)}")
                     if supabase:
-                        save_sales(supabase, new_sales)
+                        saved = save_sales(supabase, new_sales)
+                        debug_messages.append(f"   → Saved to database: {saved}")
                     if sales_df.empty:
                         sales_df = new_sales
                     else:
                         sales_df = pd.concat([sales_df, new_sales], ignore_index=True)
                     sales_count = len(new_sales)
+                else:
+                    debug_messages.append("⚠️ No sales records extracted from files")
             
             if invoice_files:
                 invoice_records = []
                 for file in invoice_files:
                     current_file += 1
                     progress_bar.progress(current_file / total_files, text=f"Processing {file.name}...")
-                    # extract_invoice_data returns a LIST, not DataFrame
+                    debug_messages.append(f"📄 Processing invoice file: {file.name}")
+                    
+                    # extract_invoice_data returns a LIST
                     records = extract_invoice_data(file)
+                    
+                    # Get debug log from extractor
+                    extractor_log = get_debug_log()
+                    debug_messages.extend(extractor_log)
+                    
+                    debug_messages.append(f"   → Returned: {type(records).__name__}")
+                    
                     # Handle both list and DataFrame returns
                     if isinstance(records, pd.DataFrame):
+                        debug_messages.append(f"   → DataFrame with {len(records)} rows")
                         if not records.empty:
                             invoice_records.extend(records.to_dict('records'))
-                    elif isinstance(records, list) and len(records) > 0:
-                        invoice_records.extend(records)
+                    elif isinstance(records, list):
+                        debug_messages.append(f"   → List with {len(records)} items")
+                        if len(records) > 0:
+                            invoice_records.extend(records)
+                            # Show first record as sample
+                            debug_messages.append(f"   → Sample: {records[0]}")
+                    else:
+                        debug_messages.append(f"   → Unexpected type: {type(records)}")
+                
+                debug_messages.append(f"📊 Total invoice records collected: {len(invoice_records)}")
                 
                 if len(invoice_records) > 0:
                     new_invoices = pd.DataFrame(invoice_records)
+                    debug_messages.append(f"   → DataFrame columns: {list(new_invoices.columns)}")
                     if supabase:
-                        save_invoices(supabase, new_invoices)
+                        saved = save_invoices(supabase, new_invoices)
+                        debug_messages.append(f"   → Saved to database: {saved}")
+                    else:
+                        debug_messages.append("   → No Supabase connection")
                     if invoices_df.empty:
                         invoices_df = new_invoices
                     else:
                         invoices_df = pd.concat([invoices_df, new_invoices], ignore_index=True)
                     invoice_count = len(new_invoices)
+                else:
+                    debug_messages.append("⚠️ No invoice records extracted from files")
             
             progress_bar.progress(1.0, text="Complete!")
+            
+            # Show debug log
+            with debug_expander:
+                for msg in debug_messages:
+                    st.text(msg)
             
             # Set success message in session state so it persists
             st.session_state.upload_completed = True
             st.session_state.upload_message = f"✅ Files processed! {sales_count} sales records, {invoice_count} invoice records saved."
             st.session_state.upload_error = ""
+            st.session_state.debug_log = debug_messages
             st.session_state.upload_key += 1
-            st.rerun()
+            
+            # Don't rerun immediately so user can see debug log
+            st.success(f"✅ Files processed! {sales_count} sales records, {invoice_count} invoice records saved.")
+            if st.button("🔄 Refresh to see data"):
+                st.rerun()
             
         except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
             # Set error message in session state
             st.session_state.upload_error = f"❌ Error processing files: {str(e)}"
             st.session_state.upload_completed = False
             st.session_state.upload_key += 1
-            st.rerun()
+            
+            with debug_expander:
+                st.error(f"Exception: {str(e)}")
+                st.code(error_trace)
     
     # Check data
     if sales_df.empty and invoices_df.empty:

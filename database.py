@@ -28,23 +28,33 @@ def save_invoices(supabase: Client, records) -> int:
     Accepts either a list of dicts or a DataFrame
     Returns number of records saved
     """
+    print(f"[DB] save_invoices called with {type(records)}")
+    
     if not supabase:
+        print("[DB] No supabase client")
         return 0
     
     # Handle DataFrame input
     if isinstance(records, pd.DataFrame):
+        print(f"[DB] DataFrame with {len(records)} rows")
         if records.empty:
+            print("[DB] DataFrame is empty")
             return 0
         records = records.to_dict('records')
+        print(f"[DB] Converted to {len(records)} records")
     
     # Handle list input
     if not isinstance(records, list) or len(records) == 0:
+        print(f"[DB] Invalid records: {type(records)}, len={len(records) if isinstance(records, list) else 'N/A'}")
         return 0
+    
+    print(f"[DB] Processing {len(records)} records")
     
     saved_count = 0
     batch_data = []
+    skipped = 0
     
-    for record in records:
+    for i, record in enumerate(records):
         try:
             # Convert date string to proper format
             invoice_date = record.get('date', '')
@@ -59,6 +69,9 @@ def save_invoices(supabase: Client, records) -> int:
             
             # Skip if no valid date
             if not invoice_date:
+                skipped += 1
+                if skipped <= 3:
+                    print(f"[DB] Skipping record {i}: no valid date - {record.get('date', 'N/A')}")
                 continue
             
             data = {
@@ -74,7 +87,14 @@ def save_invoices(supabase: Client, records) -> int:
             batch_data.append(data)
                 
         except Exception as e:
+            print(f"[DB] Error processing record {i}: {e}")
             continue
+    
+    print(f"[DB] Batch data prepared: {len(batch_data)} records, {skipped} skipped")
+    
+    if batch_data:
+        if len(batch_data) > 0:
+            print(f"[DB] Sample record: {batch_data[0]}")
     
     # Batch insert (much faster than one-by-one)
     if batch_data:
@@ -83,20 +103,31 @@ def save_invoices(supabase: Client, records) -> int:
             chunk_size = 50
             for i in range(0, len(batch_data), chunk_size):
                 chunk = batch_data[i:i + chunk_size]
+                print(f"[DB] Upserting chunk {i//chunk_size + 1}: {len(chunk)} records")
                 result = supabase.table('invoices').upsert(
                     chunk,
                     on_conflict='vendor,invoice_date,item_name,amount'
                 ).execute()
                 saved_count += len(chunk)
+                print(f"[DB] Chunk saved, total so far: {saved_count}")
         except Exception as e:
+            print(f"[DB] Upsert error: {e}")
             # If upsert fails (no unique constraint), try simple insert
             try:
-                for data in batch_data:
-                    supabase.table('invoices').insert(data).execute()
-                    saved_count += 1
+                print("[DB] Trying individual inserts...")
+                for j, data in enumerate(batch_data):
+                    try:
+                        supabase.table('invoices').insert(data).execute()
+                        saved_count += 1
+                    except Exception as e3:
+                        if j < 3:
+                            print(f"[DB] Insert error for record {j}: {e3}")
+                print(f"[DB] Individual inserts complete: {saved_count} saved")
             except Exception as e2:
+                print(f"[DB] Batch insert error: {e2}")
                 st.warning(f"Error batch saving invoices: {e2}")
     
+    print(f"[DB] Final saved count: {saved_count}")
     return saved_count
 
 

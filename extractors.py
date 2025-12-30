@@ -70,36 +70,40 @@ def extract_invoice_with_ai(pdf_path: str, filename: str = "") -> list:
     Use Claude Vision API to extract invoice data from PDF images.
     Works with any vendor format, including scanned invoices.
     """
+    debug_log(f"🤖 AI Extraction starting for: {filename}")
+    
     api_key = get_anthropic_api_key()
     if not api_key:
-        print("No API key available for AI extraction")
+        debug_log("   → ❌ No API key available")
         return []
     
     if not PDF2IMAGE_AVAILABLE:
-        print("pdf2image not available for AI extraction")
+        debug_log("   → ❌ pdf2image not available")
         return []
     
     if not REQUESTS_AVAILABLE:
-        print("requests not available for AI extraction")
+        debug_log("   → ❌ requests not available")
         return []
     
     try:
         # Convert PDF pages to images
-        images = convert_from_path(pdf_path, dpi=150)  # Lower DPI for faster processing
+        debug_log(f"   → Converting PDF to images...")
+        images = convert_from_path(pdf_path, dpi=150)
+        debug_log(f"   → Converted to {len(images)} images")
         
         if not images:
-            print("No images extracted from PDF")
+            debug_log("   → ❌ No images extracted from PDF")
             return []
         
         # Encode images as base64
         image_contents = []
         for i, img in enumerate(images[:5]):  # Limit to first 5 pages
-            # Save to bytes
             import io
             img_byte_arr = io.BytesIO()
             img.save(img_byte_arr, format='PNG')
             img_byte_arr.seek(0)
             img_base64 = base64.b64encode(img_byte_arr.read()).decode('utf-8')
+            debug_log(f"   → Image {i+1}: {len(img_base64)} chars encoded")
             
             image_contents.append({
                 "type": "image",
@@ -143,6 +147,8 @@ Extract all items now:"""
         # Build message content
         message_content = image_contents + [{"type": "text", "text": prompt_text}]
         
+        debug_log(f"   → Calling Claude API...")
+        
         # Call Claude API
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -156,16 +162,19 @@ Extract all items now:"""
                 "max_tokens": 4000,
                 "messages": [{"role": "user", "content": message_content}]
             },
-            timeout=120  # Longer timeout for image processing
+            timeout=120
         )
         
+        debug_log(f"   → API response status: {response.status_code}")
+        
         if response.status_code != 200:
-            print(f"AI API error: {response.status_code} - {response.text[:200]}")
+            debug_log(f"   → ❌ API error: {response.text[:500]}")
             return []
         
         # Parse response
         result = response.json()
         content = result['content'][0]['text'].strip()
+        debug_log(f"   → Response length: {len(content)} chars")
         
         # Clean markdown if present
         if content.startswith('```'):
@@ -175,13 +184,17 @@ Extract all items now:"""
         # Parse JSON
         try:
             data = json.loads(content)
-        except json.JSONDecodeError:
+            debug_log(f"   → JSON parsed successfully")
+        except json.JSONDecodeError as e:
+            debug_log(f"   → JSON parse error: {e}")
             # Try to find JSON in response
             json_match = re.search(r'\{[\s\S]*\}', content)
             if json_match:
                 data = json.loads(json_match.group())
+                debug_log(f"   → Found JSON via regex")
             else:
-                print(f"Could not parse AI response as JSON")
+                debug_log(f"   → ❌ Could not parse response as JSON")
+                debug_log(f"   → Response preview: {content[:300]}")
                 return []
         
         # Convert to our record format
@@ -189,9 +202,12 @@ Extract all items now:"""
         vendor_name = data.get('vendor_name', 'Unknown Vendor')
         invoice_date = data.get('invoice_date', datetime.now().strftime('%Y-%m-%d'))
         
+        debug_log(f"   → Vendor: {vendor_name}")
+        debug_log(f"   → Invoice date: {invoice_date}")
+        debug_log(f"   → Items found: {len(data.get('items', []))}")
+        
         for item in data.get('items', []):
             try:
-                # Use item date if available, otherwise invoice date
                 item_date = item.get('date', invoice_date)
                 
                 records.append({
@@ -204,15 +220,36 @@ Extract all items now:"""
                     'amount': float(item.get('amount', 0))
                 })
             except (ValueError, TypeError) as e:
-                print(f"Error parsing item: {e}")
+                debug_log(f"   → Error parsing item: {e}")
                 continue
         
-        print(f"AI extracted {len(records)} records from {filename}")
+        debug_log(f"   → ✅ AI extracted {len(records)} records")
         return records
         
     except Exception as e:
-        print(f"AI extraction error: {e}")
+        import traceback
+        debug_log(f"   → ❌ AI extraction error: {str(e)}")
+        debug_log(f"   → Traceback: {traceback.format_exc()}")
         return []
+
+
+# =============================================================================
+# DEBUG LOGGING (visible in Streamlit)
+# =============================================================================
+_debug_log = []
+
+def debug_log(msg):
+    """Add message to debug log"""
+    global _debug_log
+    _debug_log.append(msg)
+    print(msg)  # Also print to console
+
+def get_debug_log():
+    """Get and clear debug log"""
+    global _debug_log
+    log = _debug_log.copy()
+    _debug_log = []
+    return log
 
 
 # =============================================================================
@@ -225,39 +262,60 @@ def extract_invoice_data(uploaded_file) -> list:
     1. Try fast regex parsers for known vendors
     2. Fall back to AI Vision for unknown vendors or scanned PDFs
     """
+    global _debug_log
+    _debug_log = []  # Clear log for this extraction
+    
     filename = uploaded_file.name.lower()
+    debug_log(f"📄 Starting extraction: {uploaded_file.name}")
     
     # Handle Excel files (French F&B format)
     if filename.endswith('.xlsx') or filename.endswith('.xls'):
-        return extract_invoice_from_excel(uploaded_file)
+        debug_log(f"   → Detected Excel file")
+        result = extract_invoice_from_excel(uploaded_file)
+        debug_log(f"   → Excel parser returned {len(result)} records")
+        return result
     
     # Handle PDF files
     try:
         # Save uploaded file to temp location
+        file_content = uploaded_file.read()
+        debug_log(f"   → Read {len(file_content)} bytes from file")
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-            tmp.write(uploaded_file.read())
+            tmp.write(file_content)
             tmp_path = tmp.name
         
         uploaded_file.seek(0)  # Reset for potential re-read
+        debug_log(f"   → Saved to temp file: {tmp_path}")
         
         # First try text extraction with pdfplumber
         text_content = ""
         is_scanned = False
         
+        debug_log(f"   → pdfplumber available: {PDFPLUMBER_AVAILABLE}")
+        
         if PDFPLUMBER_AVAILABLE:
             try:
                 with pdfplumber.open(tmp_path) as pdf:
-                    for page in pdf.pages:
+                    num_pages = len(pdf.pages)
+                    debug_log(f"   → PDF has {num_pages} pages")
+                    for i, page in enumerate(pdf.pages):
                         page_text = page.extract_text()
                         if page_text:
                             text_content += page_text + "\n"
+                            debug_log(f"   → Page {i+1}: {len(page_text)} chars")
+                        else:
+                            debug_log(f"   → Page {i+1}: No text (scanned?)")
+                debug_log(f"   → Total text extracted: {len(text_content)} chars")
             except Exception as e:
-                print(f"pdfplumber error: {e}")
+                debug_log(f"   → pdfplumber error: {str(e)}")
         
         # Check if PDF is mostly scanned (very little text)
         if len(text_content.strip()) < 100:
             is_scanned = True
-            print(f"PDF appears to be scanned (only {len(text_content)} chars extracted)")
+            debug_log(f"   → PDF is SCANNED (only {len(text_content)} chars)")
+        else:
+            debug_log(f"   → PDF has text content")
         
         # Determine vendor and choose extraction method
         vendor_detected = None
@@ -275,32 +333,64 @@ def extract_invoice_data(uploaded_file) -> list:
         elif any(x in text_content for x in ['うに', '鮪', '天然鯛', '甘鯛', '信州サーモン']):
             vendor_detected = 'maruyata'
         
+        debug_log(f"   → Vendor detected: {vendor_detected}")
+        debug_log(f"   → Is scanned: {is_scanned}")
+        
         records = []
         
         # Try regex parser for known vendors (if not scanned)
         if vendor_detected and not is_scanned and text_content:
+            debug_log(f"   → Trying regex parser for {vendor_detected}")
             if vendor_detected == 'hirayama':
                 records = parse_hirayama_invoice(text_content)
             elif vendor_detected == 'french_fnb':
                 records = parse_french_fnb_invoice(text_content)
             elif vendor_detected == 'maruyata':
                 records = parse_maruyata_invoice(text_content)
+            debug_log(f"   → Regex parser returned {len(records)} records")
         
         # If regex failed or unknown vendor, use AI extraction
         if not records:
-            print(f"Using AI extraction for: {filename}")
-            records = extract_invoice_with_ai(tmp_path, filename)
+            debug_log(f"   → Regex failed/skipped, trying AI extraction...")
+            debug_log(f"   → PDF2IMAGE available: {PDF2IMAGE_AVAILABLE}")
+            debug_log(f"   → REQUESTS available: {REQUESTS_AVAILABLE}")
+            
+            api_key = get_anthropic_api_key()
+            debug_log(f"   → API key found: {api_key is not None}")
+            if api_key:
+                debug_log(f"   → API key starts with: {api_key[:15]}...")
+            
+            if api_key and PDF2IMAGE_AVAILABLE and REQUESTS_AVAILABLE:
+                records = extract_invoice_with_ai(tmp_path, filename)
+                debug_log(f"   → AI extraction returned {len(records)} records")
+            else:
+                missing = []
+                if not api_key:
+                    missing.append("API_KEY")
+                if not PDF2IMAGE_AVAILABLE:
+                    missing.append("pdf2image")
+                if not REQUESTS_AVAILABLE:
+                    missing.append("requests")
+                debug_log(f"   → ❌ Cannot use AI: missing {', '.join(missing)}")
         
         # Clean up temp file
         try:
             os.unlink(tmp_path)
-        except:
-            pass
+            debug_log(f"   → Cleaned up temp file")
+        except Exception as e:
+            debug_log(f"   → Cleanup error: {e}")
+        
+        debug_log(f"✅ Final result: {len(records)} records")
+        
+        if records and len(records) > 0:
+            debug_log(f"   → Sample record: {records[0]}")
         
         return records
     
     except Exception as e:
-        print(f"Error extracting invoice data: {e}")
+        import traceback
+        debug_log(f"❌ EXCEPTION: {str(e)}")
+        debug_log(f"   → Traceback: {traceback.format_exc()}")
         return []
 
 
