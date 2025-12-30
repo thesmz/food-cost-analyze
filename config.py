@@ -190,6 +190,51 @@ MENU_PRICES = {
 }
 
 # =============================================================================
+# DISH TO INGREDIENT MAPPING - For forecasting and cost analysis
+# =============================================================================
+DISH_INGREDIENT_MAP = {
+    'Beef Tenderloin': {
+        'ingredient': 'Wagyu Tenderloin',
+        'portion_grams': 150,
+        'selling_price': 5682,
+        'estimated_cost_per_serving': 1800
+    },
+    'Egg Toast Caviar': {
+        'ingredient': 'KAVIARI Caviar',
+        'portion_grams': 10,
+        'selling_price': 3247,
+        'estimated_cost_per_serving': 1950
+    },
+    'Snow Crab Dumpling': {
+        'ingredient': 'Snow Crab',
+        'portion_grams': 80,
+        'selling_price': 2800,
+        'estimated_cost_per_serving': 800
+    },
+    'Sea Urchin, Black Bread': {
+        'ingredient': 'Sea Urchin',
+        'portion_grams': 30,
+        'selling_price': 4200,
+        'estimated_cost_per_serving': 1200
+    },
+    'Roasted Amadai': {
+        'ingredient': 'Amadai Fish',
+        'portion_grams': 120,
+        'selling_price': 4500,
+        'estimated_cost_per_serving': 1100
+    }
+}
+
+# =============================================================================
+# FORECAST CONFIGURATION
+# =============================================================================
+FORECAST_CONFIG = {
+    'default_growth_rate': 0.05,  # 5% YoY growth
+    'min_data_points': 3,         # Minimum months for forecasting
+    'confidence_interval': 0.95,  # 95% confidence
+}
+
+# =============================================================================
 # SEASONALITY DATA - Historical patterns for forecasting
 # =============================================================================
 SEASONALITY_FACTORS = {

@@ -478,26 +478,49 @@ def display_beef_analysis(sales_df, invoices_df, beef_per_serving, beef_yield_pc
         display_df['Amount/金額'] = display_df['Amount/金額'].apply(lambda x: f"¥{x:,.0f}")
         st.dataframe(display_df, use_container_width=True)
     
-    # Sales breakdown by category
+    # Detailed sales breakdown - RESTORED
     if not beef_sales.empty:
-        st.subheader("📊 Sales Breakdown / 販売内訳")
-        if 'category' in beef_sales.columns:
-            beef_sales_calc = beef_sales.copy()
-            beef_sales_calc['calc_price'] = beef_sales_calc.apply(
-                lambda row: beef_dinner_price if row['price'] == 0 or pd.isna(row['price']) else row['price'],
-                axis=1
-            )
-            beef_sales_calc['calc_revenue'] = beef_sales_calc.apply(
-                lambda row: row['net_total'] if row['net_total'] != 0 else row['qty'] * row['calc_price'],
-                axis=1
-            )
-            category_summary = beef_sales_calc.groupby('category').agg({
-                'qty': 'sum',
-                'calc_revenue': 'sum'
-            }).reset_index()
-            category_summary.columns = ['Category/カテゴリ', 'Qty/数量', 'Revenue/売上']
-            category_summary['Revenue/売上'] = category_summary['Revenue/売上'].apply(lambda x: f"¥{x:,.0f}")
-            st.dataframe(category_summary, use_container_width=True)
+        st.subheader("🍽️ Sales Details / 売上明細")
+        sales_display = beef_sales[['code', 'name', 'category', 'qty', 'price', 'net_total']].copy()
+        
+        # Apply fixed price for Dinner items, keep original for others
+        sales_display['price'] = sales_display.apply(
+            lambda row: beef_dinner_price if (row['price'] == 0 or pd.isna(row['price'])) else row['price'], 
+            axis=1
+        )
+        
+        # Calculate revenue: use net_total if exists, otherwise qty * price
+        sales_display['net_total'] = sales_display.apply(
+            lambda row: row['net_total'] if row['net_total'] != 0 else row['qty'] * row['price'],
+            axis=1
+        )
+        
+        sales_display.columns = ['Code/コード', 'Item/品目', 'Category/カテゴリ', 'Qty/数量', 'Price/単価', 'Revenue/売上']
+        sales_display['Price/単価'] = sales_display['Price/単価'].apply(lambda x: f"¥{x:,.0f}")
+        sales_display['Revenue/売上'] = sales_display['Revenue/売上'].apply(lambda x: f"¥{x:,.0f}")
+        
+        # Add note about estimated prices
+        st.caption("※ Dinner course items: estimated at ¥5,682/dish")
+        st.dataframe(sales_display, use_container_width=True)
+        
+        # Summary by category - RESTORED
+        st.subheader("📊 Sales by Category / カテゴリ別売上")
+        beef_sales_summary = beef_sales.copy()
+        beef_sales_summary['calc_price'] = beef_sales_summary.apply(
+            lambda row: beef_dinner_price if row['price'] == 0 or pd.isna(row['price']) else row['price'],
+            axis=1
+        )
+        beef_sales_summary['calc_revenue'] = beef_sales_summary.apply(
+            lambda row: row['net_total'] if row['net_total'] != 0 else row['qty'] * row['calc_price'],
+            axis=1
+        )
+        category_summary = beef_sales_summary.groupby('category').agg({
+            'qty': 'sum',
+            'calc_revenue': 'sum'
+        }).reset_index()
+        category_summary.columns = ['Category/カテゴリ', 'Qty/数量', 'Revenue/売上']
+        category_summary['Revenue/売上'] = category_summary['Revenue/売上'].apply(lambda x: f"¥{x:,.0f}")
+        st.dataframe(category_summary, use_container_width=True)
 
 
 def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yield_pct):
@@ -602,6 +625,50 @@ def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yi
         display_df['Unit Price/単価'] = display_df['Unit Price/単価'].apply(lambda x: f"¥{x:,.0f}")
         display_df['Amount/金額'] = display_df['Amount/金額'].apply(lambda x: f"¥{x:,.0f}")
         st.dataframe(display_df, use_container_width=True)
+    
+    # Detailed sales breakdown - RESTORED
+    if not caviar_sales.empty:
+        st.subheader("🍽️ Sales Details / 売上明細")
+        sales_display = caviar_sales[['code', 'name', 'category', 'qty', 'price', 'net_total']].copy()
+        
+        # Apply estimated price only where price is 0 or missing
+        sales_display['price'] = sales_display.apply(
+            lambda row: estimated_course_item_price if row['price'] == 0 or pd.isna(row['price']) else row['price'], 
+            axis=1
+        )
+        
+        # Calculate revenue: use net_total if exists, otherwise qty * price
+        sales_display['net_total'] = sales_display.apply(
+            lambda row: row['net_total'] if row['net_total'] != 0 else row['qty'] * row['price'],
+            axis=1
+        )
+        
+        sales_display.columns = ['Code/コード', 'Item/品目', 'Category/カテゴリ', 'Qty/数量', 'Price/単価', 'Revenue/売上']
+        sales_display['Price/単価'] = sales_display['Price/単価'].apply(lambda x: f"¥{x:,.0f}")
+        sales_display['Revenue/売上'] = sales_display['Revenue/売上'].apply(lambda x: f"¥{x:,.0f}")
+        
+        # Add note about estimated prices
+        st.caption("※ Dinner course items: estimated at ¥19,480 ÷ 6 courses = ¥3,247/dish")
+        st.dataframe(sales_display, use_container_width=True)
+        
+        # Summary by category - RESTORED
+        st.subheader("📊 Sales by Category / カテゴリ別売上")
+        caviar_sales_summary = caviar_sales.copy()
+        caviar_sales_summary['calc_price'] = caviar_sales_summary.apply(
+            lambda row: estimated_course_item_price if row['price'] == 0 or pd.isna(row['price']) else row['price'],
+            axis=1
+        )
+        caviar_sales_summary['calc_revenue'] = caviar_sales_summary.apply(
+            lambda row: row['net_total'] if row['net_total'] != 0 else row['qty'] * row['calc_price'],
+            axis=1
+        )
+        category_summary = caviar_sales_summary.groupby('category').agg({
+            'qty': 'sum',
+            'calc_revenue': 'sum'
+        }).reset_index()
+        category_summary.columns = ['Category/カテゴリ', 'Qty/数量', 'Revenue/売上']
+        category_summary['Revenue/売上'] = category_summary['Revenue/売上'].apply(lambda x: f"¥{x:,.0f}")
+        st.dataframe(category_summary, use_container_width=True)
 
 
 def display_vendor_items(invoices_df):
