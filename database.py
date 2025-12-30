@@ -22,12 +22,23 @@ def init_supabase() -> Optional[Client]:
         return None
 
 
-def save_invoices(supabase: Client, records: List[Dict[str, Any]]) -> int:
+def save_invoices(supabase: Client, records) -> int:
     """
     Save invoice records to Supabase
+    Accepts either a list of dicts or a DataFrame
     Returns number of records saved
     """
-    if not supabase or not records:
+    if not supabase:
+        return 0
+    
+    # Handle DataFrame input
+    if isinstance(records, pd.DataFrame):
+        if records.empty:
+            return 0
+        records = records.to_dict('records')
+    
+    # Handle list input
+    if not isinstance(records, list) or len(records) == 0:
         return 0
     
     saved_count = 0
