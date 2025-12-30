@@ -13,7 +13,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import DISH_INGREDIENT_MAP, A_LA_CARTE_ITEMS
+from config import MENU_ITEMS, A_LA_CARTE_ITEMS
 from database import init_supabase, load_sales, get_date_range, get_data_summary
 
 st.set_page_config(page_title="Menu Engineering | The Shinmonzen", page_icon="📈", layout="wide")
@@ -108,15 +108,15 @@ for _, row in item_sales.iterrows():
     total_revenue = row['net_total']
     avg_price = row['price'] if row['price'] > 0 else (total_revenue / qty_sold if qty_sold > 0 else 0)
     
-    # Get cost from config
+    # Get cost from A_LA_CARTE_ITEMS config
     if item_name in A_LA_CARTE_ITEMS:
         config = A_LA_CARTE_ITEMS[item_name]
-        selling_price = config.get('selling_price', avg_price)
-        food_cost = config.get('estimated_food_cost', selling_price * default_cost_pct)
-    elif item_name in DISH_INGREDIENT_MAP:
-        config = DISH_INGREDIENT_MAP[item_name]
-        selling_price = config.get('selling_price', avg_price)
-        food_cost = config.get('estimated_cost_per_serving', selling_price * default_cost_pct)
+        selling_price = config.get('price', avg_price)
+        food_cost = config.get('cost', selling_price * default_cost_pct)
+    elif item_name in MENU_ITEMS:
+        config = MENU_ITEMS[item_name]
+        selling_price = config.get('default_price', avg_price)
+        food_cost = selling_price * default_cost_pct
     else:
         selling_price = avg_price if avg_price > 0 else 1000
         food_cost = selling_price * default_cost_pct
