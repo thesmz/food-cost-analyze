@@ -242,11 +242,10 @@ st.subheader("📋 Item Details / 品目詳細")
 quadrant_order = {'⭐ Star': 1, '🐴 Plowhorse': 2, '❓ Puzzle': 3, '🐕 Dog': 4}
 menu_df['_order'] = menu_df['Quadrant'].map(quadrant_order)
 
-display_df = menu_df[['Item', 'Quadrant', 'Qty Sold', 'Unit Margin', 'Total Contribution']].copy()
-display_df = display_df.sort_values(['_order' if '_order' in menu_df.columns else 'Quadrant', 'Qty Sold'], 
-                                     ascending=[True, False])
-display_df = display_df.drop(columns=['_order'], errors='ignore')
+# Sort first, then select columns for display
+sorted_df = menu_df.sort_values(['_order', 'Qty Sold'], ascending=[True, False])
+display_df = sorted_df[['Item', 'Quadrant', 'Qty Sold', 'Unit Margin', 'Total Contribution']].copy()
 display_df['Qty Sold'] = display_df['Qty Sold'].apply(lambda x: f"{x:,.0f}")
 display_df['Unit Margin'] = display_df['Unit Margin'].apply(lambda x: f"¥{x:,.0f}")
 display_df['Total Contribution'] = display_df['Total Contribution'].apply(lambda x: f"¥{x:,.0f}")
-st.dataframe(display_df, use_container_width=True, hide_index=True)
+st.dataframe(display_df, hide_index=True)

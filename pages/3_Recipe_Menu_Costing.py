@@ -27,10 +27,13 @@ st.markdown("*Build menus by calculating dish costs from ingredient breakdowns*"
 
 
 # =============================================================================
-# TRANSLATION FUNCTION (Using Claude API)
+# TRANSLATION FUNCTION (Using Claude API for PANTRY INGREDIENTS)
 # =============================================================================
-def translate_dish_names(dishes):
-    """Translate dish names from Japanese to English using Claude API"""
+def translate_pantry_ingredients(pantry_dict):
+    """
+    Translate pantry ingredient names from Japanese to meaningful English using Claude API.
+    This is SMART translation - understands that ﾊﾟﾚｯﾄ ﾛﾝﾄﾞ ﾄﾞ ﾌﾞｰﾙ is BUTTER, not just transliteration.
+    """
     import requests
     import json
     
@@ -38,27 +41,44 @@ def translate_dish_names(dishes):
     try:
         api_key = st.secrets.get("ANTHROPIC_API_KEY")
         if not api_key:
-            st.warning("ANTHROPIC_API_KEY not found in secrets. Translation skipped.")
-            return dishes
+            st.warning("ANTHROPIC_API_KEY not found in secrets. Add it to enable translation.")
+            return pantry_dict
     except Exception:
         st.warning("Could not access secrets. Translation skipped.")
-        return dishes
+        return pantry_dict
     
-    # Collect names to translate
-    names_to_translate = [d['name'] for d in dishes if not d.get('english_name')]
+    # Collect names that need translation
+    names_to_translate = []
+    for name, info in pantry_dict.items():
+        if not info.get('english_name'):
+            names_to_translate.append(name)
     
     if not names_to_translate:
-        st.info("All dishes already have English names.")
-        return dishes
+        st.info("All ingredients already have English names.")
+        return pantry_dict
     
-    # Build prompt
-    prompt = f"""Translate these Japanese dish/food names to English. Return ONLY a JSON object mapping original name to English translation. Keep it concise and culinary-appropriate.
+    # Build smart prompt for culinary context
+    prompt = f"""You are a culinary expert translator. Translate these Japanese food ingredient names to clear, meaningful English names that a chef would understand.
 
-Names:
-{json.dumps(names_to_translate, ensure_ascii=False)}
+IMPORTANT RULES:
+1. DO NOT just transliterate - understand what the ingredient actually IS
+2. For French/Italian product names in katakana, identify the actual product (e.g., butter, cheese, mushroom type)
+3. Keep it concise but clear - a chef should immediately know what this ingredient is
+4. Include key details like (Salted), (Fresh), size/weight if relevant
 
-Return format: {{"Japanese Name": "English Name"}}
-JSON only, no explanation:"""
+Examples of what I want:
+- "ﾊﾟﾚｯﾄ ﾛﾝﾄﾞ ﾄﾞ ﾌﾞｰﾙ ﾄﾞ ﾊﾞﾗｯﾄ ﾃﾞﾐｾﾙ（有塩）" → "Churned Butter Round (Lightly Salted)"
+- "KAVIARI キャビア クリスタル100g セレクションJG" → "KAVIARI Crystal Caviar 100g Selection"
+- "生 スモールジロール 1kg" → "Fresh Small Girolles (Chanterelles) 1kg"
+- "和牛ヒレ" → "Wagyu Beef Tenderloin"
+- "シャンパン ヴィネガー 500ml" → "Champagne Vinegar 500ml"
+
+Ingredient names to translate:
+{json.dumps(names_to_translate, ensure_ascii=False, indent=2)}
+
+Return ONLY a valid JSON object mapping original name to English translation.
+Format: {{"original Japanese name": "Clear English Name"}}
+JSON only, no explanation or markdown:"""
 
     try:
         response = requests.post(
@@ -70,35 +90,52 @@ JSON only, no explanation:"""
             },
             json={
                 "model": "claude-sonnet-4-20250514",
-                "max_tokens": 1000,
+                "max_tokens": 2000,
                 "messages": [{"role": "user", "content": prompt}]
             },
-            timeout=30
+            timeout=60
         )
         
         if response.status_code == 200:
             result = response.json()
             content = result['content'][0]['text']
             
-            # Parse JSON from response
+            # Parse JSON from response - handle potential markdown wrapping
             import re
-            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
-            if json_match:
-                translations = json.loads(json_match.group())
-                
-                # Apply translations to dishes
-                for dish in dishes:
-                    if dish['name'] in translations:
-                        dish['english_name'] = translations[dish['name']]
-                
-                return dishes
+            # Try to find JSON object
+            content_clean = content.strip()
+            if content_clean.startswith('```'):
+                # Remove markdown code blocks
+                content_clean = re.sub(r'^```(?:json)?\s*', '', content_clean)
+                content_clean = re.sub(r'\s*```$', '', content_clean)
+            
+            try:
+                translations = json.loads(content_clean)
+            except json.JSONDecodeError:
+                # Try to find JSON object within text
+                json_match = re.search(r'\{[\s\S]*\}', content_clean)
+                if json_match:
+                    translations = json.loads(json_match.group())
+                else:
+                    st.error("Could not parse translation response")
+                    return pantry_dict
+            
+            # Apply translations to pantry
+            translated_count = 0
+            for name in pantry_dict:
+                if name in translations:
+                    pantry_dict[name]['english_name'] = translations[name]
+                    translated_count += 1
+            
+            st.success(f"✅ Translated {translated_count} ingredients!")
+            return pantry_dict
         else:
-            st.error(f"API error: {response.status_code}")
+            st.error(f"API error: {response.status_code} - {response.text[:200]}")
             
     except Exception as e:
-        st.error(f"Translation error: {str(e)[:100]}")
+        st.error(f"Translation error: {str(e)[:200]}")
     
-    return dishes
+    return pantry_dict
 
 
 # =============================================================================
@@ -323,11 +360,19 @@ with st.sidebar:
     else:
         st.warning("No invoice data. Upload invoices in main app.")
     
-    # Refresh button
-    if st.button("🔄 Refresh Pantry"):
-        st.session_state.pantry = load_pantry_from_invoices()
-        st.cache_data.clear()
-        st.rerun()
+    # Refresh and Translate buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Refresh", use_container_width=True):
+            st.session_state.pantry = load_pantry_from_invoices()
+            st.cache_data.clear()
+            st.rerun()
+    
+    with col2:
+        if st.button("🌐 Translate", use_container_width=True, help="AI translate ingredient names to English"):
+            with st.spinner("Translating ingredients..."):
+                st.session_state.pantry = translate_pantry_ingredients(st.session_state.pantry)
+                st.rerun()
     
     # Add custom ingredient
     with st.expander("➕ Add Custom Ingredient", expanded=False):
@@ -467,7 +512,7 @@ else:
 
 
 # =============================================================================
-# SECTION 2: MENU ASSEMBLER (with Translation)
+# SECTION 2: MENU ASSEMBLER
 # =============================================================================
 st.divider()
 st.header("2️⃣ Menu Assembler / メニュー構成")
@@ -476,7 +521,7 @@ if not st.session_state.saved_dishes:
     st.info("No dishes saved yet. Create dishes above and save them to build your menu.")
 else:
     # Menu settings row
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    col1, col2, col3 = st.columns([1, 1, 1])
     
     with col1:
         menu_type = st.selectbox(
@@ -499,14 +544,6 @@ else:
     
     with col3:
         target_cost_pct = st.slider("Target Food Cost %", min_value=20, max_value=50, value=30)
-    
-    with col4:
-        # TRANSLATE BUTTON - translates dish names in the menu
-        if st.button("🌐 Translate Names", use_container_width=True):
-            with st.spinner("Translating..."):
-                st.session_state.saved_dishes = translate_dish_names(st.session_state.saved_dishes)
-                st.success("Translation complete!")
-                st.rerun()
     
     st.subheader("📋 Menu Dishes / メニュー料理")
     
