@@ -210,52 +210,63 @@ def main():
         invoices_df = load_invoices(supabase, start_date, end_date)
         sales_df = load_sales(supabase, start_date, end_date)
     
-    # Process uploaded files with error handling
+    # Process uploaded files with error handling and progress bar
     if sales_files or invoice_files:
-        with st.spinner("Processing files..."):
-            try:
-                sales_count = 0
-                invoice_count = 0
+        try:
+            sales_count = 0
+            invoice_count = 0
+            
+            total_files = len(sales_files or []) + len(invoice_files or [])
+            progress_bar = st.progress(0, text="Processing files...")
+            current_file = 0
+            
+            if sales_files:
+                sales_list = []
+                for file in sales_files:
+                    current_file += 1
+                    progress_bar.progress(current_file / total_files, text=f"Processing {file.name}...")
+                    df = extract_sales_data(file)
+                    if not df.empty:
+                        sales_list.append(df)
+                if sales_list:
+                    new_sales = pd.concat(sales_list, ignore_index=True)
+                    if supabase:
+                        save_sales(supabase, new_sales)
+                    sales_df = pd.concat([sales_df, new_sales], ignore_index=True) if not sales_df.empty else new_sales
+                    sales_count = len(new_sales)
+            
+            if invoice_files:
+                invoice_records = []
+                for file in invoice_files:
+                    current_file += 1
+                    progress_bar.progress(current_file / total_files, text=f"Processing {file.name}...")
+                    # extract_invoice_data returns a LIST, not DataFrame
+                    records = extract_invoice_data(file)
+                    if records and len(records) > 0:
+                        invoice_records.extend(records)
                 
-                if sales_files:
-                    sales_list = []
-                    for file in sales_files:
-                        df = extract_sales_data(file)
-                        if not df.empty:
-                            sales_list.append(df)
-                    if sales_list:
-                        new_sales = pd.concat(sales_list, ignore_index=True)
-                        if supabase:
-                            save_sales(supabase, new_sales)
-                        sales_df = pd.concat([sales_df, new_sales], ignore_index=True) if not sales_df.empty else new_sales
-                        sales_count = len(new_sales)
-                
-                if invoice_files:
-                    invoice_list = []
-                    for file in invoice_files:
-                        df = extract_invoice_data(file)
-                        if not df.empty:
-                            invoice_list.append(df)
-                    if invoice_list:
-                        new_invoices = pd.concat(invoice_list, ignore_index=True)
-                        if supabase:
-                            save_invoices(supabase, new_invoices)
-                        invoices_df = pd.concat([invoices_df, new_invoices], ignore_index=True) if not invoices_df.empty else new_invoices
-                        invoice_count = len(new_invoices)
-                
-                # Set success message in session state so it persists
-                st.session_state.upload_completed = True
-                st.session_state.upload_message = f"✅ Files processed! {sales_count} sales records, {invoice_count} invoice records saved."
-                st.session_state.upload_error = ""
-                st.session_state.upload_key += 1
-                st.rerun()
-                
-            except Exception as e:
-                # Set error message in session state
-                st.session_state.upload_error = f"❌ Error processing files: {str(e)}"
-                st.session_state.upload_completed = False
-                st.session_state.upload_key += 1
-                st.rerun()
+                if invoice_records:
+                    new_invoices = pd.DataFrame(invoice_records)
+                    if supabase:
+                        save_invoices(supabase, new_invoices)
+                    invoices_df = pd.concat([invoices_df, new_invoices], ignore_index=True) if not invoices_df.empty else new_invoices
+                    invoice_count = len(new_invoices)
+            
+            progress_bar.progress(1.0, text="Complete!")
+            
+            # Set success message in session state so it persists
+            st.session_state.upload_completed = True
+            st.session_state.upload_message = f"✅ Files processed! {sales_count} sales records, {invoice_count} invoice records saved."
+            st.session_state.upload_error = ""
+            st.session_state.upload_key += 1
+            st.rerun()
+            
+        except Exception as e:
+            # Set error message in session state
+            st.session_state.upload_error = f"❌ Error processing files: {str(e)}"
+            st.session_state.upload_completed = False
+            st.session_state.upload_key += 1
+            st.rerun()
     
     # Check data
     if sales_df.empty and invoices_df.empty:
