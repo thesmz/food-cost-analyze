@@ -33,29 +33,41 @@ def translate_pantry_ingredients(pantry_dict):
     """
     Translate pantry ingredient names from Japanese to meaningful English using Claude API.
     This is SMART translation - understands that ﾊﾟﾚｯﾄ ﾛﾝﾄﾞ ﾄﾞ ﾌﾞｰﾙ is BUTTER, not just transliteration.
+    Returns: (updated_pantry_dict, status_message, is_success)
     """
     import requests
     import json
     
+    st.info("🚀 Debug: translate_pantry_ingredients() called")
+    st.info(f"📦 Debug: pantry_dict has {len(pantry_dict) if pantry_dict else 0} items")
+    
+    # Check if pantry is empty
+    if not pantry_dict:
+        return pantry_dict, "❌ Pantry is empty. Upload invoices first.", False
+    
     # Get API key from Streamlit secrets
+    st.info("🔑 Debug: Attempting to get API key from secrets...")
     try:
         api_key = st.secrets.get("ANTHROPIC_API_KEY")
         if not api_key:
-            st.warning("ANTHROPIC_API_KEY not found in secrets. Add it to enable translation.")
-            return pantry_dict
-    except Exception:
-        st.warning("Could not access secrets. Translation skipped.")
-        return pantry_dict
+            st.error("❌ Debug: API key is None or empty")
+            return pantry_dict, "❌ ANTHROPIC_API_KEY not found in secrets. Add it to enable translation.", False
+        st.info(f"✅ Debug: API key retrieved (length: {len(api_key)})")
+    except Exception as e:
+        st.error(f"❌ Debug: Exception getting secrets: {type(e).__name__}: {str(e)}")
+        return pantry_dict, f"❌ Could not access secrets: {str(e)[:100]}", False
     
     # Collect names that need translation
+    st.info("📋 Debug: Collecting names that need translation...")
     names_to_translate = []
     for name, info in pantry_dict.items():
         if not info.get('english_name'):
             names_to_translate.append(name)
     
+    st.info(f"📝 Debug: Found {len(names_to_translate)} items needing translation")
+    
     if not names_to_translate:
-        st.info("All ingredients already have English names.")
-        return pantry_dict
+        return pantry_dict, "ℹ️ All ingredients already have English names.", True
     
     # Build smart prompt for culinary context
     prompt = f"""You are a culinary expert translator. Translate these Japanese food ingredient names to clear, meaningful English names that a chef would understand.
@@ -81,6 +93,9 @@ Format: {{"original Japanese name": "Clear English Name"}}
 JSON only, no explanation or markdown:"""
 
     try:
+        st.info(f"🔑 Debug: API key starts with: {api_key[:10]}..." if len(api_key) > 10 else "API key too short")
+        st.info(f"📤 Debug: Sending request with {len(names_to_translate)} items...")
+        
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -96,29 +111,36 @@ JSON only, no explanation or markdown:"""
             timeout=60
         )
         
+        st.info(f"📡 Debug: Response status: {response.status_code}")
+        
         if response.status_code == 200:
             result = response.json()
             content = result['content'][0]['text']
             
+            st.info(f"📄 Debug: Response content length: {len(content)}")
+            
+            # Show first part of response
+            with st.expander("Raw API Response (first 500 chars)", expanded=False):
+                st.code(content[:500])
+            
             # Parse JSON from response - handle potential markdown wrapping
             import re
-            # Try to find JSON object
             content_clean = content.strip()
             if content_clean.startswith('```'):
-                # Remove markdown code blocks
                 content_clean = re.sub(r'^```(?:json)?\s*', '', content_clean)
                 content_clean = re.sub(r'\s*```$', '', content_clean)
             
             try:
                 translations = json.loads(content_clean)
-            except json.JSONDecodeError:
-                # Try to find JSON object within text
+                st.info(f"✅ Debug: Parsed {len(translations)} translations from JSON")
+            except json.JSONDecodeError as e:
+                st.warning(f"⚠️ Debug: JSON parse error: {e}")
                 json_match = re.search(r'\{[\s\S]*\}', content_clean)
                 if json_match:
                     translations = json.loads(json_match.group())
+                    st.info(f"✅ Debug: Regex found {len(translations)} translations")
                 else:
-                    st.error("Could not parse translation response")
-                    return pantry_dict
+                    return pantry_dict, f"❌ Could not parse JSON from API response: {content[:100]}", False
             
             # Apply translations to pantry
             translated_count = 0
@@ -127,15 +149,27 @@ JSON only, no explanation or markdown:"""
                     pantry_dict[name]['english_name'] = translations[name]
                     translated_count += 1
             
-            st.success(f"✅ Translated {translated_count} ingredients!")
-            return pantry_dict
-        else:
-            st.error(f"API error: {response.status_code} - {response.text[:200]}")
+            st.info(f"✅ Debug: Applied {translated_count} translations to pantry")
             
+            return pantry_dict, f"✅ Translated {translated_count} of {len(names_to_translate)} ingredients!", True
+        else:
+            error_detail = response.text[:500]
+            st.error(f"❌ API error details: {error_detail}")
+            return pantry_dict, f"❌ API error {response.status_code}: {response.text[:200]}", False
+            
+    except requests.exceptions.Timeout:
+        st.error("❌ Debug: Request timed out after 60 seconds")
+        return pantry_dict, "❌ Request timed out. Try again.", False
+    except requests.exceptions.ConnectionError as e:
+        st.error(f"❌ Debug: Connection error: {str(e)}")
+        return pantry_dict, f"❌ Connection error: {str(e)[:100]}", False
     except Exception as e:
-        st.error(f"Translation error: {str(e)[:200]}")
-    
-    return pantry_dict
+        import traceback
+        st.error(f"❌ Debug: Exception type: {type(e).__name__}")
+        st.error(f"❌ Debug: Exception message: {str(e)}")
+        with st.expander("Full traceback"):
+            st.code(traceback.format_exc())
+        return pantry_dict, f"❌ Error: {type(e).__name__}: {str(e)[:200]}", False
 
 
 # =============================================================================
@@ -234,6 +268,12 @@ if 'ing_qty' not in st.session_state:
     st.session_state.ing_qty = 100.0
 if 'ing_yield' not in st.session_state:
     st.session_state.ing_yield = 100
+
+# Translation status message
+if 'translate_message' not in st.session_state:
+    st.session_state.translate_message = None
+if 'translate_success' not in st.session_state:
+    st.session_state.translate_success = False
 
 
 # =============================================================================
@@ -360,6 +400,15 @@ with st.sidebar:
     else:
         st.warning("No invoice data. Upload invoices in main app.")
     
+    # Show translation status if exists
+    if 'translate_message' in st.session_state and st.session_state.translate_message:
+        if st.session_state.get('translate_success', False):
+            st.success(st.session_state.translate_message)
+        else:
+            st.error(st.session_state.translate_message)
+        # Clear after showing
+        st.session_state.translate_message = None
+    
     # Refresh and Translate buttons
     col1, col2 = st.columns(2)
     with col1:
@@ -370,9 +419,39 @@ with st.sidebar:
     
     with col2:
         if st.button("🌐 Translate", use_container_width=True, help="AI translate ingredient names to English"):
-            with st.spinner("Translating ingredients..."):
-                st.session_state.pantry = translate_pantry_ingredients(st.session_state.pantry)
-                st.rerun()
+            if not st.session_state.pantry:
+                st.error("❌ Pantry is empty. Upload invoices in main app first.")
+            else:
+                st.info(f"🔍 Starting translation for {len(st.session_state.pantry)} items...")
+                
+                # Show items to translate
+                items_needing_translation = [n for n, info in st.session_state.pantry.items() if not info.get('english_name')]
+                st.info(f"📝 {len(items_needing_translation)} items need translation")
+                
+                if items_needing_translation:
+                    with st.expander("Items to translate", expanded=True):
+                        for name in items_needing_translation[:5]:
+                            st.write(f"• {name}")
+                        if len(items_needing_translation) > 5:
+                            st.write(f"... and {len(items_needing_translation) - 5} more")
+                
+                # Call translation (without spinner to see debug output)
+                st.info("🌐 Calling Claude API...")
+                updated_pantry, message, success = translate_pantry_ingredients(st.session_state.pantry)
+                
+                # Show result immediately before rerun
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+                
+                st.session_state.pantry = updated_pantry
+                st.session_state.translate_message = message
+                st.session_state.translate_success = success
+                
+                # Add a button to manually rerun after seeing debug
+                if st.button("🔄 Apply & Refresh"):
+                    st.rerun()
     
     # Add custom ingredient
     with st.expander("➕ Add Custom Ingredient", expanded=False):
