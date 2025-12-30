@@ -1,6 +1,12 @@
 """
 Menu Engineering - BCG Matrix Analysis
 A la Carte items only (excludes Tasting Menus)
+
+IMPORTANT: Food costs are calculated from:
+1. Default percentage (user-adjustable slider)
+2. Custom costs (user can input actual costs for specific items)
+
+NO FAKE HARDCODED VALUES - we don't know your actual costs!
 """
 
 import streamlit as st
@@ -13,13 +19,12 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import MENU_ITEMS, A_LA_CARTE_ITEMS
 from database import init_supabase, load_sales, get_date_range, get_data_summary
 
 st.set_page_config(page_title="Menu Engineering | The Shinmonzen", page_icon="📈", layout="wide")
 
 st.title("📈 Menu Engineering / メニュー分析")
-st.markdown("**BCG Matrix Analysis** - A La Carte Items Only (Excludes Tasting Menus)")
+st.markdown("**BCG Matrix Analysis** - A La Carte Items Only")
 
 
 def is_valid_item_name(name) -> bool:
@@ -34,7 +39,6 @@ def is_valid_item_name(name) -> bool:
     cleaned = name_str.replace(',', '').replace('.', '').replace(' ', '').replace('-', '')
     if cleaned.isdigit():
         return False
-    # Filter out category names that slip through
     invalid_names = ['carte', 'a la carte', 'dinner', 'lunch', 'breakfast', 'dessert', 'course', 'open food']
     if name_str.lower() in invalid_names:
         return False
@@ -43,6 +47,10 @@ def is_valid_item_name(name) -> bool:
 
 # Initialize Supabase
 supabase = init_supabase()
+
+# Initialize session state for custom food costs
+if 'custom_food_costs' not in st.session_state:
+    st.session_state.custom_food_costs = {}
 
 # Sidebar
 with st.sidebar:
@@ -58,8 +66,22 @@ with st.sidebar:
     st.divider()
     
     # Settings
+    st.subheader("⚙️ Settings")
     min_qty = st.number_input("Min Qty Sold / 最小販売数", min_value=1, value=5)
-    default_cost_pct = st.slider("Default Cost % (if unknown)", 20, 50, 30) / 100
+    
+    st.markdown("---")
+    st.subheader("💰 Food Cost %")
+    st.caption("Set your estimated food cost percentage:")
+    
+    default_cost_pct = st.slider(
+        "Default Food Cost %", 
+        min_value=15, 
+        max_value=50, 
+        value=30,
+        help="Applied to all items without custom cost set"
+    )
+    
+    st.info(f"Using **{default_cost_pct}%** for margin calculation")
 
 # Load sales data
 sales_df = pd.DataFrame()
@@ -100,6 +122,44 @@ if item_sales.empty:
     st.warning(f"No items with qty >= {min_qty}")
     st.stop()
 
+# Option to set custom food costs
+with st.expander("💰 Set Custom Food Costs (Optional)", expanded=False):
+    st.caption("If you know the actual food cost for specific items, enter them here:")
+    
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        item_options = item_sales['name'].tolist()
+        selected_item = st.selectbox("Select Item", item_options)
+    
+    if selected_item:
+        current_row = item_sales[item_sales['name'] == selected_item].iloc[0]
+        current_price = current_row['price'] if current_row['price'] > 0 else (current_row['net_total'] / current_row['qty'])
+        
+        with col2:
+            custom_cost = st.number_input(
+                "Food Cost (¥)", 
+                min_value=0, 
+                max_value=int(current_price) + 1000,
+                value=st.session_state.custom_food_costs.get(selected_item, int(current_price * default_cost_pct / 100))
+            )
+        with col3:
+            st.metric("Selling Price", f"¥{current_price:,.0f}")
+            if st.button("✅ Set Cost"):
+                st.session_state.custom_food_costs[selected_item] = custom_cost
+                st.success(f"Set!")
+                st.rerun()
+    
+    if st.session_state.custom_food_costs:
+        st.markdown("**Custom costs set:**")
+        for item, cost in list(st.session_state.custom_food_costs.items()):
+            col_a, col_b = st.columns([4, 1])
+            with col_a:
+                st.write(f"• {item}: ¥{cost:,}")
+            with col_b:
+                if st.button("🗑️", key=f"rm_{item}"):
+                    del st.session_state.custom_food_costs[item]
+                    st.rerun()
+
 # Calculate metrics
 menu_data = []
 for _, row in item_sales.iterrows():
@@ -107,45 +167,38 @@ for _, row in item_sales.iterrows():
     qty_sold = row['qty']
     total_revenue = row['net_total']
     avg_price = row['price'] if row['price'] > 0 else (total_revenue / qty_sold if qty_sold > 0 else 0)
+    selling_price = avg_price
     
-    # Get cost from A_LA_CARTE_ITEMS config
-    if item_name in A_LA_CARTE_ITEMS:
-        config = A_LA_CARTE_ITEMS[item_name]
-        selling_price = config.get('price', avg_price)
-        food_cost = config.get('cost', selling_price * default_cost_pct)
-    elif item_name in MENU_ITEMS:
-        config = MENU_ITEMS[item_name]
-        selling_price = config.get('default_price', avg_price)
-        food_cost = selling_price * default_cost_pct
+    # Food cost: custom if set, otherwise default percentage
+    if item_name in st.session_state.custom_food_costs:
+        food_cost = st.session_state.custom_food_costs[item_name]
+        cost_source = "Custom"
     else:
-        selling_price = avg_price if avg_price > 0 else 1000
-        food_cost = selling_price * default_cost_pct
+        food_cost = selling_price * (default_cost_pct / 100)
+        cost_source = f"{default_cost_pct}%"
     
     unit_margin = selling_price - food_cost
     
     menu_data.append({
         'Item': item_name,
         'Qty Sold': qty_sold,
+        'Selling Price': selling_price,
+        'Food Cost': food_cost,
+        'Cost Source': cost_source,
         'Unit Margin': unit_margin,
         'Total Revenue': total_revenue,
         'Total Contribution': unit_margin * qty_sold,
-        'Selling Price': selling_price,
-        'Food Cost': food_cost
     })
 
 menu_df = pd.DataFrame(menu_data)
 
-st.info(f"📊 Analyzing **{len(menu_df)}** A la carte items")
+st.info(f"📊 Analyzing **{len(menu_df)}** A la carte items | Default Food Cost: **{default_cost_pct}%**")
 
 # Calculate averages
 avg_qty = menu_df['Qty Sold'].mean()
 avg_margin = menu_df['Unit Margin'].mean()
 
-# Classify items based on averages
-# Star = High Qty AND High Margin (top-right)
-# Plowhorse = High Qty AND Low Margin (bottom-right)
-# Puzzle = Low Qty AND High Margin (top-left)
-# Dog = Low Qty AND Low Margin (bottom-left)
+# Classify items
 def classify(row):
     high_qty = row['Qty Sold'] >= avg_qty
     high_margin = row['Unit Margin'] >= avg_margin
@@ -160,10 +213,9 @@ def classify(row):
 
 menu_df['Quadrant'] = menu_df.apply(classify, axis=1)
 
-# Create scatter plot - CLEAN version without overlapping labels
+# Create scatter plot
 fig = go.Figure()
 
-# Color and symbol mapping
 quadrant_style = {
     '⭐ Star': {'color': '#FFD700', 'symbol': 'star'},
     '🐴 Plowhorse': {'color': '#4CAF50', 'symbol': 'circle'},
@@ -177,7 +229,7 @@ for quadrant, style in quadrant_style.items():
         fig.add_trace(go.Scatter(
             x=df_q['Qty Sold'],
             y=df_q['Unit Margin'],
-            mode='markers',  # NO text labels - only markers
+            mode='markers',
             name=quadrant,
             marker=dict(
                 size=12, 
@@ -185,8 +237,8 @@ for quadrant, style in quadrant_style.items():
                 symbol=style['symbol'],
                 line=dict(width=1, color='white')
             ),
-            text=df_q['Item'],  # For hover only
-            hovertemplate='<b>%{text}</b><br>Qty Sold: %{x:,.0f}<br>Unit Margin: ¥%{y:,.0f}<extra></extra>'
+            text=df_q['Item'],
+            hovertemplate='<b>%{text}</b><br>Qty: %{x:,.0f}<br>Margin: ¥%{y:,.0f}<extra></extra>'
         ))
 
 # Add quadrant dividing lines
@@ -194,24 +246,24 @@ fig.add_hline(y=avg_margin, line_dash="dash", line_color="rgba(0,0,0,0.3)", line
 fig.add_vline(x=avg_qty, line_dash="dash", line_color="rgba(0,0,0,0.3)", line_width=2)
 
 # Add quadrant labels
-fig.add_annotation(x=avg_qty*0.3, y=menu_df['Unit Margin'].max()*0.95, 
-                   text="❓ Puzzle<br>(High Margin, Low Qty)", showarrow=False, 
-                   font=dict(size=10, color="gray"))
-fig.add_annotation(x=menu_df['Qty Sold'].max()*0.85, y=menu_df['Unit Margin'].max()*0.95, 
-                   text="⭐ Star<br>(High Margin, High Qty)", showarrow=False,
-                   font=dict(size=10, color="gray"))
-fig.add_annotation(x=avg_qty*0.3, y=menu_df['Unit Margin'].min()*1.1, 
-                   text="🐕 Dog<br>(Low Margin, Low Qty)", showarrow=False,
-                   font=dict(size=10, color="gray"))
-fig.add_annotation(x=menu_df['Qty Sold'].max()*0.85, y=menu_df['Unit Margin'].min()*1.1, 
-                   text="🐴 Plowhorse<br>(Low Margin, High Qty)", showarrow=False,
-                   font=dict(size=10, color="gray"))
+max_margin = menu_df['Unit Margin'].max()
+min_margin = menu_df['Unit Margin'].min()
+max_qty = menu_df['Qty Sold'].max()
+
+fig.add_annotation(x=avg_qty*0.3, y=max_margin*0.95, 
+                   text="❓ Puzzle", showarrow=False, font=dict(size=11, color="gray"))
+fig.add_annotation(x=max_qty*0.85, y=max_margin*0.95, 
+                   text="⭐ Star", showarrow=False, font=dict(size=11, color="gray"))
+fig.add_annotation(x=avg_qty*0.3, y=min_margin + (avg_margin - min_margin)*0.1, 
+                   text="🐕 Dog", showarrow=False, font=dict(size=11, color="gray"))
+fig.add_annotation(x=max_qty*0.85, y=min_margin + (avg_margin - min_margin)*0.1, 
+                   text="🐴 Plowhorse", showarrow=False, font=dict(size=11, color="gray"))
 
 fig.update_layout(
     title=f"Menu Engineering Matrix | Avg Qty: {avg_qty:.0f} | Avg Margin: ¥{avg_margin:,.0f}",
     xaxis_title="Popularity (Qty Sold)",
     yaxis_title="Profitability (Unit Margin ¥)",
-    height=550,
+    height=500,
     showlegend=True,
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
     plot_bgcolor='white',
@@ -221,31 +273,40 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-st.caption("💡 **Tip:** Hover over points to see dish names")
+st.caption("💡 Hover over points to see dish names")
 
 # Quadrant guide
 st.markdown("""
-### 📖 Quadrant Guide / 分類ガイド
+### 📖 Quadrant Guide
 
-| Quadrant | Qty vs Avg | Margin vs Avg | Action |
-|----------|------------|---------------|--------|
-| ⭐ **Star** | HIGH (≥ avg) | HIGH (≥ avg) | Keep promoting! |
-| 🐴 **Plowhorse** | HIGH (≥ avg) | LOW (< avg) | Raise price or reduce cost |
-| ❓ **Puzzle** | LOW (< avg) | HIGH (≥ avg) | Market more, feature it |
-| 🐕 **Dog** | LOW (< avg) | LOW (< avg) | Consider removing |
+| Quadrant | Meaning | Action |
+|----------|---------|--------|
+| ⭐ **Star** | High sales + High margin | Keep promoting |
+| 🐴 **Plowhorse** | High sales + Low margin | Raise price or cut cost |
+| ❓ **Puzzle** | Low sales + High margin | Market more |
+| 🐕 **Dog** | Low sales + Low margin | Consider removing |
 """)
 
 # Detail table
-st.subheader("📋 Item Details / 品目詳細")
+st.subheader("📋 Item Details")
 
-# Add quadrant order for sorting
 quadrant_order = {'⭐ Star': 1, '🐴 Plowhorse': 2, '❓ Puzzle': 3, '🐕 Dog': 4}
 menu_df['_order'] = menu_df['Quadrant'].map(quadrant_order)
-
-# Sort first, then select columns for display
 sorted_df = menu_df.sort_values(['_order', 'Qty Sold'], ascending=[True, False])
-display_df = sorted_df[['Item', 'Quadrant', 'Qty Sold', 'Unit Margin', 'Total Contribution']].copy()
+
+display_df = sorted_df[['Item', 'Quadrant', 'Qty Sold', 'Selling Price', 'Food Cost', 'Cost Source', 'Unit Margin']].copy()
 display_df['Qty Sold'] = display_df['Qty Sold'].apply(lambda x: f"{x:,.0f}")
+display_df['Selling Price'] = display_df['Selling Price'].apply(lambda x: f"¥{x:,.0f}")
+display_df['Food Cost'] = display_df['Food Cost'].apply(lambda x: f"¥{x:,.0f}")
 display_df['Unit Margin'] = display_df['Unit Margin'].apply(lambda x: f"¥{x:,.0f}")
-display_df['Total Contribution'] = display_df['Total Contribution'].apply(lambda x: f"¥{x:,.0f}")
-st.dataframe(display_df, hide_index=True)
+
+st.dataframe(display_df, hide_index=True, use_container_width=True)
+
+# Important note
+st.warning("""
+⚠️ **Important:** Food costs shown are **estimates** based on the {0}% default. 
+To get accurate margin analysis, either:
+1. Adjust the slider in the sidebar
+2. Set custom costs for specific items above
+3. Use the Recipe & Menu Costing tool to calculate actual costs
+""".format(default_cost_pct))
