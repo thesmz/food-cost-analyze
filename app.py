@@ -12,7 +12,7 @@ from datetime import datetime, date, timedelta
 
 # Import our modules
 from extractors import extract_sales_data, extract_invoice_data
-from config import VENDOR_CONFIG, DISH_INGREDIENT_MAP, DEFAULT_TARGETS
+from config import VENDOR_CONFIG, YIELD_RATES, THRESHOLDS
 from database import (
     init_supabase, save_invoices, save_sales, 
     load_invoices, load_sales, get_date_range, get_data_summary,
@@ -57,11 +57,17 @@ def main():
         st.session_state.filter_start = date.today().replace(day=1) - timedelta(days=30)
     if 'filter_end' not in st.session_state:
         st.session_state.filter_end = date.today()
+    if 'upload_completed' not in st.session_state:
+        st.session_state.upload_completed = False
+    if 'upload_message' not in st.session_state:
+        st.session_state.upload_message = ""
+    if 'upload_error' not in st.session_state:
+        st.session_state.upload_error = ""
     
     # Initialize Supabase
     supabase = init_supabase()
     
-    # Sidebar
+    # Sidebar - Navigation & Database Status Only
     with st.sidebar:
         st.header("🏪 The Shinmonzen")
         
@@ -113,36 +119,7 @@ def main():
         
         st.divider()
         
-        # Settings
-        st.subheader("⚙️ Settings / 設定")
-        
-        beef_per_serving = st.number_input(
-            "Beef per serving (g) / 1人前の牛肉量",
-            min_value=50, max_value=500, value=150,
-            help="Grams of beef tenderloin per serving (cooked)"
-        )
-        
-        beef_yield_pct = st.slider(
-            "Beef Yield (%) / 牛肉歩留まり",
-            min_value=50, max_value=100, value=65,
-            help="Usable meat after trimming (65% = 35% loss)"
-        ) / 100
-        
-        caviar_per_serving = st.number_input(
-            "Caviar per serving (g) / 1人前のキャビア量",
-            min_value=5, max_value=50, value=10,
-            help="Grams of caviar per serving"
-        )
-        
-        caviar_yield_pct = st.slider(
-            "Caviar Yield (%) / キャビア歩留まり",
-            min_value=80, max_value=100, value=100,
-            help="Usable caviar (usually 100%)"
-        ) / 100
-        
-        st.divider()
-        
-        # File upload
+        # File upload in sidebar
         st.subheader("📁 Upload Data")
         
         sales_files = st.file_uploader(
@@ -168,6 +145,57 @@ def main():
                     st.info(f"Deleted {deleted['invoices']} invoices, {deleted['sales']} sales")
                     st.rerun()
     
+    # =========================================================================
+    # MAIN PAGE - Configuration & Settings Expander (MOVED FROM SIDEBAR)
+    # =========================================================================
+    with st.expander("⚙️ Configuration & Settings / 設定", expanded=False):
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            beef_per_serving = st.number_input(
+                "Beef per serving (g) / 1人前の牛肉量",
+                min_value=50, max_value=500, value=150,
+                help="Grams of beef tenderloin per serving (cooked)"
+            )
+        
+        with col2:
+            beef_yield_pct = st.slider(
+                "Beef Yield (%) / 牛肉歩留まり",
+                min_value=50, max_value=100, value=65,
+                help="Usable meat after trimming (65% = 35% loss)"
+            ) / 100
+        
+        with col3:
+            caviar_per_serving = st.number_input(
+                "Caviar per serving (g) / 1人前のキャビア量",
+                min_value=5, max_value=50, value=10,
+                help="Grams of caviar per serving"
+            )
+        
+        with col4:
+            caviar_yield_pct = st.slider(
+                "Caviar Yield (%) / キャビア歩留まり",
+                min_value=80, max_value=100, value=100,
+                help="Usable caviar (usually 100%)"
+            ) / 100
+    
+    # =========================================================================
+    # SHOW UPLOAD SUCCESS/ERROR MESSAGES (Persistent across reruns)
+    # =========================================================================
+    if st.session_state.upload_completed:
+        st.success(st.session_state.upload_message)
+        # Clear the flag after showing (user can dismiss by refreshing)
+        if st.button("Dismiss", key="dismiss_success"):
+            st.session_state.upload_completed = False
+            st.session_state.upload_message = ""
+            st.rerun()
+    
+    if st.session_state.upload_error:
+        st.error(st.session_state.upload_error)
+        if st.button("Dismiss Error", key="dismiss_error"):
+            st.session_state.upload_error = ""
+            st.rerun()
+    
     # Main content
     sales_df = pd.DataFrame()
     invoices_df = pd.DataFrame()
@@ -182,36 +210,52 @@ def main():
         invoices_df = load_invoices(supabase, start_date, end_date)
         sales_df = load_sales(supabase, start_date, end_date)
     
-    # Process uploaded files
+    # Process uploaded files with error handling
     if sales_files or invoice_files:
         with st.spinner("Processing files..."):
-            if sales_files:
-                sales_list = []
-                for file in sales_files:
-                    df = extract_sales_data(file)
-                    if not df.empty:
-                        sales_list.append(df)
-                if sales_list:
-                    new_sales = pd.concat(sales_list, ignore_index=True)
-                    if supabase:
-                        save_sales(supabase, new_sales)
-                    sales_df = pd.concat([sales_df, new_sales], ignore_index=True) if not sales_df.empty else new_sales
-            
-            if invoice_files:
-                invoice_list = []
-                for file in invoice_files:
-                    df = extract_invoice_data(file)
-                    if not df.empty:
-                        invoice_list.append(df)
-                if invoice_list:
-                    new_invoices = pd.concat(invoice_list, ignore_index=True)
-                    if supabase:
-                        save_invoices(supabase, new_invoices)
-                    invoices_df = pd.concat([invoices_df, new_invoices], ignore_index=True) if not invoices_df.empty else new_invoices
-            
-            st.session_state.upload_key += 1
-            st.success("✅ Files processed!")
-            st.rerun()
+            try:
+                sales_count = 0
+                invoice_count = 0
+                
+                if sales_files:
+                    sales_list = []
+                    for file in sales_files:
+                        df = extract_sales_data(file)
+                        if not df.empty:
+                            sales_list.append(df)
+                    if sales_list:
+                        new_sales = pd.concat(sales_list, ignore_index=True)
+                        if supabase:
+                            save_sales(supabase, new_sales)
+                        sales_df = pd.concat([sales_df, new_sales], ignore_index=True) if not sales_df.empty else new_sales
+                        sales_count = len(new_sales)
+                
+                if invoice_files:
+                    invoice_list = []
+                    for file in invoice_files:
+                        df = extract_invoice_data(file)
+                        if not df.empty:
+                            invoice_list.append(df)
+                    if invoice_list:
+                        new_invoices = pd.concat(invoice_list, ignore_index=True)
+                        if supabase:
+                            save_invoices(supabase, new_invoices)
+                        invoices_df = pd.concat([invoices_df, new_invoices], ignore_index=True) if not invoices_df.empty else new_invoices
+                        invoice_count = len(new_invoices)
+                
+                # Set success message in session state so it persists
+                st.session_state.upload_completed = True
+                st.session_state.upload_message = f"✅ Files processed! {sales_count} sales records, {invoice_count} invoice records saved."
+                st.session_state.upload_error = ""
+                st.session_state.upload_key += 1
+                st.rerun()
+                
+            except Exception as e:
+                # Set error message in session state
+                st.session_state.upload_error = f"❌ Error processing files: {str(e)}"
+                st.session_state.upload_completed = False
+                st.session_state.upload_key += 1
+                st.rerun()
     
     # Check data
     if sales_df.empty and invoices_df.empty:
@@ -442,7 +486,7 @@ def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yi
     # Show yield info
     st.info(f"📐 **Yield Rate / 歩留まり率:** {caviar_yield_pct*100:.0f}% | **Serving Size / 1人前:** {caviar_per_serving}g")
     
-    # Filter caviar data
+    # Filter caviar data - include both spellings
     caviar_sales = sales_df[sales_df['name'].str.contains('Egg Toast Caviar', case=False, na=False)] if not sales_df.empty else pd.DataFrame()
     caviar_invoices = invoices_df[invoices_df['item_name'].str.contains('キャビア|キャヴィア|KAVIARI|caviar', case=False, na=False)] if not invoices_df.empty else pd.DataFrame()
     
@@ -476,13 +520,15 @@ def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yi
     # YIELD-ADJUSTED: Expected usage
     expected_usage_g = (total_sold * caviar_per_serving) / caviar_yield_pct
     
-    # Caviar purchases
+    # Caviar purchases - handle both unit types (cans and grams)
     if not caviar_invoices.empty:
+        # Check if quantities are in cans (small numbers) or grams (large numbers)
         total_qty = caviar_invoices['quantity'].sum()
-        if total_qty > 100:
-            total_purchased_g = total_qty
+        # If unit is 100g or quantity looks like can count, multiply by 100
+        if total_qty < 200:  # Likely cans, not grams
+            total_purchased_g = total_qty * 100  # Convert cans to grams
         else:
-            total_purchased_g = total_qty * 100
+            total_purchased_g = total_qty
         total_purchased_units = total_purchased_g / 100
         total_cost = caviar_invoices['amount'].sum()
     else:
@@ -495,7 +541,7 @@ def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yi
         st.metric("Total Revenue / 売上合計", f"¥{total_revenue:,.0f}")
     
     with col2:
-        st.metric("Total Purchased / 仕入総量", f"{total_purchased_g:.0f} g ({total_purchased_units:.0f} units)")
+        st.metric("Total Purchased / 仕入総量", f"{total_purchased_g:.0f} g ({total_purchased_units:.0f} cans)")
         st.metric("Total Cost / 仕入原価", f"¥{total_cost:,.0f}")
     
     with col3:
