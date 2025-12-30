@@ -1,7 +1,7 @@
 """
 Dynamic Recipe & Menu Costing Tool
-Build menus from scratch by calculating dish costs from ingredient breakdowns.
-Pantry auto-populated from actual invoice data with translation support.
+Split-panel UI: Pantry Explorer (left) + Recipe Canvas (right)
+With AI translation support for ingredient names.
 """
 
 import streamlit as st
@@ -22,80 +22,76 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🍽️ Recipe & Menu Costing Tool")
-st.markdown("*Build menus by calculating dish costs from ingredient breakdowns*")
+# =============================================================================
+# HELPER: Get API Key from various secret locations
+# =============================================================================
+def get_anthropic_api_key():
+    """Try to get ANTHROPIC_API_KEY from multiple secret locations"""
+    # Try root level first
+    api_key = st.secrets.get("ANTHROPIC_API_KEY")
+    if api_key:
+        return api_key
+    
+    # Try under [supabase] section
+    if "supabase" in st.secrets:
+        api_key = st.secrets["supabase"].get("ANTHROPIC_API_KEY")
+        if api_key:
+            return api_key
+    
+    # Try under [anthropic] section
+    if "anthropic" in st.secrets:
+        api_key = st.secrets["anthropic"].get("api_key")
+        if api_key:
+            return api_key
+    
+    return None
 
 
 # =============================================================================
-# TRANSLATION FUNCTION (Using Claude API for PANTRY INGREDIENTS)
+# TRANSLATION FUNCTION (Using Claude API)
 # =============================================================================
 def translate_pantry_ingredients(pantry_dict):
     """
     Translate pantry ingredient names from Japanese to meaningful English using Claude API.
-    This is SMART translation - understands that ﾊﾟﾚｯﾄ ﾛﾝﾄﾞ ﾄﾞ ﾌﾞｰﾙ is BUTTER, not just transliteration.
-    Returns: (updated_pantry_dict, status_message, is_success)
+    Smart translation - understands culinary context.
     """
     import requests
     import json
     
-    st.info("🚀 Debug: translate_pantry_ingredients() called")
-    st.info(f"📦 Debug: pantry_dict has {len(pantry_dict) if pantry_dict else 0} items")
-    
-    # Check if pantry is empty
     if not pantry_dict:
-        return pantry_dict, "❌ Pantry is empty. Upload invoices first.", False
+        return pantry_dict, "❌ Pantry is empty.", False
     
-    # Get API key from Streamlit secrets
-    st.info("🔑 Debug: Attempting to get API key from secrets...")
-    try:
-        api_key = st.secrets.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            st.error("❌ Debug: API key is None or empty")
-            return pantry_dict, "❌ ANTHROPIC_API_KEY not found in secrets. Add it to enable translation.", False
-        st.info(f"✅ Debug: API key retrieved (length: {len(api_key)})")
-    except Exception as e:
-        st.error(f"❌ Debug: Exception getting secrets: {type(e).__name__}: {str(e)}")
-        return pantry_dict, f"❌ Could not access secrets: {str(e)[:100]}", False
+    # Get API key
+    api_key = get_anthropic_api_key()
+    if not api_key:
+        return pantry_dict, "❌ ANTHROPIC_API_KEY not found. Add to secrets (root level or under [supabase]).", False
     
-    # Collect names that need translation
-    st.info("📋 Debug: Collecting names that need translation...")
-    names_to_translate = []
-    for name, info in pantry_dict.items():
-        if not info.get('english_name'):
-            names_to_translate.append(name)
-    
-    st.info(f"📝 Debug: Found {len(names_to_translate)} items needing translation")
+    # Collect names needing translation
+    names_to_translate = [name for name, info in pantry_dict.items() if not info.get('english_name')]
     
     if not names_to_translate:
-        return pantry_dict, "ℹ️ All ingredients already have English names.", True
+        return pantry_dict, "ℹ️ All ingredients already translated.", True
     
-    # Build smart prompt for culinary context
-    prompt = f"""You are a culinary expert translator. Translate these Japanese food ingredient names to clear, meaningful English names that a chef would understand.
+    # Build prompt
+    prompt = f"""You are a culinary expert translator. Translate these Japanese food ingredient names to clear, meaningful English.
 
-IMPORTANT RULES:
-1. DO NOT just transliterate - understand what the ingredient actually IS
-2. For French/Italian product names in katakana, identify the actual product (e.g., butter, cheese, mushroom type)
-3. Keep it concise but clear - a chef should immediately know what this ingredient is
-4. Include key details like (Salted), (Fresh), size/weight if relevant
+RULES:
+1. DO NOT just transliterate - understand what the ingredient IS
+2. For French/Italian names in katakana, identify the actual product (butter, cheese, etc.)
+3. Be concise but clear - a chef should know what this is
+4. Include (Salted), (Fresh), size if relevant
 
-Examples of what I want:
-- "ﾊﾟﾚｯﾄ ﾛﾝﾄﾞ ﾄﾞ ﾌﾞｰﾙ ﾄﾞ ﾊﾞﾗｯﾄ ﾃﾞﾐｾﾙ（有塩）" → "Churned Butter Round (Lightly Salted)"
-- "KAVIARI キャビア クリスタル100g セレクションJG" → "KAVIARI Crystal Caviar 100g Selection"
-- "生 スモールジロール 1kg" → "Fresh Small Girolles (Chanterelles) 1kg"
+Examples:
+- "ﾊﾟﾚｯﾄ ﾛﾝﾄﾞ ﾄﾞ ﾌﾞｰﾙ ﾄﾞ ﾊﾞﾗｯﾄ ﾃﾞﾐｾﾙ（有塩）" → "Churned Butter (Lightly Salted)"
+- "KAVIARI キャビア クリスタル100g セレクションJG" → "KAVIARI Crystal Caviar 100g"
 - "和牛ヒレ" → "Wagyu Beef Tenderloin"
-- "シャンパン ヴィネガー 500ml" → "Champagne Vinegar 500ml"
 
-Ingredient names to translate:
-{json.dumps(names_to_translate, ensure_ascii=False, indent=2)}
+Ingredients:
+{json.dumps(names_to_translate, ensure_ascii=False)}
 
-Return ONLY a valid JSON object mapping original name to English translation.
-Format: {{"original Japanese name": "Clear English Name"}}
-JSON only, no explanation or markdown:"""
+Return ONLY valid JSON: {{"original": "English"}}"""
 
     try:
-        st.info(f"🔑 Debug: API key starts with: {api_key[:10]}..." if len(api_key) > 10 else "API key too short")
-        st.info(f"📤 Debug: Sending request with {len(names_to_translate)} items...")
-        
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -111,73 +107,45 @@ JSON only, no explanation or markdown:"""
             timeout=60
         )
         
-        st.info(f"📡 Debug: Response status: {response.status_code}")
-        
         if response.status_code == 200:
-            result = response.json()
-            content = result['content'][0]['text']
-            
-            st.info(f"📄 Debug: Response content length: {len(content)}")
-            
-            # Show first part of response
-            with st.expander("Raw API Response (first 500 chars)", expanded=False):
-                st.code(content[:500])
-            
-            # Parse JSON from response - handle potential markdown wrapping
             import re
-            content_clean = content.strip()
-            if content_clean.startswith('```'):
-                content_clean = re.sub(r'^```(?:json)?\s*', '', content_clean)
-                content_clean = re.sub(r'\s*```$', '', content_clean)
+            content = response.json()['content'][0]['text'].strip()
+            
+            # Clean markdown if present
+            if content.startswith('```'):
+                content = re.sub(r'^```(?:json)?\s*', '', content)
+                content = re.sub(r'\s*```$', '', content)
             
             try:
-                translations = json.loads(content_clean)
-                st.info(f"✅ Debug: Parsed {len(translations)} translations from JSON")
-            except json.JSONDecodeError as e:
-                st.warning(f"⚠️ Debug: JSON parse error: {e}")
-                json_match = re.search(r'\{[\s\S]*\}', content_clean)
-                if json_match:
-                    translations = json.loads(json_match.group())
-                    st.info(f"✅ Debug: Regex found {len(translations)} translations")
+                translations = json.loads(content)
+            except:
+                match = re.search(r'\{[\s\S]*\}', content)
+                if match:
+                    translations = json.loads(match.group())
                 else:
-                    return pantry_dict, f"❌ Could not parse JSON from API response: {content[:100]}", False
+                    return pantry_dict, "❌ Could not parse API response.", False
             
-            # Apply translations to pantry
-            translated_count = 0
+            # Apply translations
+            count = 0
             for name in pantry_dict:
                 if name in translations:
                     pantry_dict[name]['english_name'] = translations[name]
-                    translated_count += 1
+                    count += 1
             
-            st.info(f"✅ Debug: Applied {translated_count} translations to pantry")
-            
-            return pantry_dict, f"✅ Translated {translated_count} of {len(names_to_translate)} ingredients!", True
+            return pantry_dict, f"✅ Translated {count} ingredients!", True
         else:
-            error_detail = response.text[:500]
-            st.error(f"❌ API error details: {error_detail}")
-            return pantry_dict, f"❌ API error {response.status_code}: {response.text[:200]}", False
+            return pantry_dict, f"❌ API error {response.status_code}", False
             
-    except requests.exceptions.Timeout:
-        st.error("❌ Debug: Request timed out after 60 seconds")
-        return pantry_dict, "❌ Request timed out. Try again.", False
-    except requests.exceptions.ConnectionError as e:
-        st.error(f"❌ Debug: Connection error: {str(e)}")
-        return pantry_dict, f"❌ Connection error: {str(e)[:100]}", False
     except Exception as e:
-        import traceback
-        st.error(f"❌ Debug: Exception type: {type(e).__name__}")
-        st.error(f"❌ Debug: Exception message: {str(e)}")
-        with st.expander("Full traceback"):
-            st.code(traceback.format_exc())
-        return pantry_dict, f"❌ Error: {type(e).__name__}: {str(e)[:200]}", False
+        return pantry_dict, f"❌ Error: {str(e)[:100]}", False
 
 
 # =============================================================================
-# LOAD INVOICE DATA FOR PANTRY
+# LOAD PANTRY FROM INVOICES
 # =============================================================================
 @st.cache_data(ttl=300)
 def load_pantry_from_invoices():
-    """Load ingredient prices from actual invoice data"""
+    """Load ingredient prices from invoice data"""
     supabase = init_supabase()
     if not supabase:
         return {}
@@ -191,47 +159,49 @@ def load_pantry_from_invoices():
         return {}
     
     pantry = {}
-    
-    # Group by item_name and vendor
-    for (item_name, vendor), group in invoices_df.groupby(['item_name', 'vendor']):
-        # Skip shipping/delivery fees
-        if '運賃' in str(item_name) or '送料' in str(item_name) or '宅配' in str(item_name):
+    for _, row in invoices_df.iterrows():
+        item_name = row.get('item_name', '')
+        if not item_name:
             continue
         
-        # Get unit price from invoice
-        if 'unit_price' in group.columns and group['unit_price'].notna().any():
-            unit_price = group['unit_price'].dropna().median()
-        else:
-            total_amt = group['amount'].sum()
-            total_qty = group['quantity'].sum()
-            unit_price = total_amt / total_qty if total_qty > 0 else total_amt
+        # Determine category based on patterns
+        category = 'Other'
+        item_lower = item_name.lower()
+        if any(x in item_lower for x in ['牛', 'ヒレ', 'beef', 'wagyu', '肉']):
+            category = 'Meat'
+        elif any(x in item_lower for x in ['キャビア', 'caviar', 'kaviari']):
+            category = 'Seafood'
+        elif any(x in item_lower for x in ['バター', 'butter', 'ブール', 'チーズ', 'cheese']):
+            category = 'Dairy'
+        elif any(x in item_lower for x in ['ヴィネガー', 'vinegar', 'オイル', 'oil']):
+            category = 'Condiments'
+        elif any(x in item_lower for x in ['ジロール', 'mushroom', 'きのこ', 'truffle']):
+            category = 'Produce'
         
-        # Determine unit type
-        unit_raw = group['unit'].iloc[0] if 'unit' in group.columns and pd.notna(group['unit'].iloc[0]) else ''
-        unit_str = str(unit_raw).lower()
+        vendor = row.get('vendor', 'Unknown')
+        # Simplify vendor names
+        if 'ひら山' in vendor or 'Hirayama' in vendor.lower():
+            vendor = 'Meat Shop Hirayama'
+        elif 'フレンチ' in vendor or 'French' in vendor:
+            vendor = 'French F&B Japan'
         
-        if unit_str in ['kg', 'ｋｇ']:
-            unit_type = 'kg'
-        elif unit_str in ['g', 'ｇ']:
-            unit_type = 'g'
-        elif '100g' in item_name.lower() or '100g' in unit_str:
-            unit_type = '100g'
-        elif unit_str in ['l', 'ｌ', 'リットル']:
-            unit_type = 'L'
-        elif unit_str in ['ml', 'ｍｌ']:
-            unit_type = 'ml'
-        elif unit_str in ['本', '缶', 'pc', 'ｐｃ', '個']:
-            unit_type = 'pc'
-        else:
-            unit_type = 'unit'
+        # Calculate cost per unit
+        qty = float(row.get('quantity', 1) or 1)
+        amount = float(row.get('amount', 0) or 0)
+        unit = row.get('unit', 'pc') or 'pc'
         
-        pantry[item_name] = {
-            'cost_per_unit': round(unit_price),
-            'unit': unit_type,
-            'vendor': vendor,
-            'original_name': item_name,
-            'english_name': None
-        }
+        cost_per_unit = amount / qty if qty > 0 else amount
+        
+        # Update or add to pantry
+        if item_name not in pantry or cost_per_unit > pantry[item_name]['cost_per_unit']:
+            pantry[item_name] = {
+                'cost_per_unit': cost_per_unit,
+                'unit': unit,
+                'vendor': vendor,
+                'category': category,
+                'english_name': None,
+                'last_date': str(row.get('date', ''))
+            }
     
     return pantry
 
@@ -241,353 +211,313 @@ def load_pantry_from_invoices():
 # =============================================================================
 if 'pantry' not in st.session_state:
     st.session_state.pantry = load_pantry_from_invoices()
-
-if 'custom_pantry' not in st.session_state:
-    st.session_state.custom_pantry = {}
-
+if 'current_dish_name' not in st.session_state:
+    st.session_state.current_dish_name = ""
+if 'current_ingredients' not in st.session_state:
+    st.session_state.current_ingredients = []
 if 'saved_dishes' not in st.session_state:
     st.session_state.saved_dishes = []
-
-if 'current_dish_ingredients' not in st.session_state:
-    st.session_state.current_dish_ingredients = []
-
-if 'menu_type' not in st.session_state:
-    st.session_state.menu_type = 'Dinner'
-
-if 'selling_price' not in st.session_state:
-    st.session_state.selling_price = 24000
-
-# Input field states for pantry sync
-if 'ing_name' not in st.session_state:
-    st.session_state.ing_name = ""
-if 'ing_cost' not in st.session_state:
-    st.session_state.ing_cost = 1000
-if 'ing_unit' not in st.session_state:
-    st.session_state.ing_unit = 'kg'
-if 'ing_qty' not in st.session_state:
-    st.session_state.ing_qty = 100.0
-if 'ing_yield' not in st.session_state:
-    st.session_state.ing_yield = 100
-
-# Translation status message
-if 'translate_message' not in st.session_state:
-    st.session_state.translate_message = None
-if 'translate_success' not in st.session_state:
-    st.session_state.translate_success = False
+if 'selected_pantry_item' not in st.session_state:
+    st.session_state.selected_pantry_item = None
+if 'transfer_qty' not in st.session_state:
+    st.session_state.transfer_qty = 100
+if 'transfer_yield' not in st.session_state:
+    st.session_state.transfer_yield = 100
 
 
 # =============================================================================
-# HELPER FUNCTIONS
+# MAIN LAYOUT: Split Panel
 # =============================================================================
-def calculate_ingredient_cost(unit_cost, unit, quantity, yield_pct):
-    """Calculate cost for an ingredient line with unit conversion and yield adjustment."""
-    if yield_pct <= 0:
-        yield_pct = 100
-    
-    unit_scales = {
-        'kg': 1000,
-        'g': 1,
-        '100g': 100,
-        'L': 1000,
-        'ml': 1,
-        'pc': 1,
-    }
-    
-    scale = unit_scales.get(unit, 1)
-    cost = (unit_cost / scale) * quantity / (yield_pct / 100)
-    return cost
+st.title("🍽️ Recipe & Menu Costing Tool")
 
-
-def on_pantry_select():
-    """Callback when pantry selection changes - sync inputs"""
-    selected = st.session_state.pantry_selector
-    all_pantry = {**st.session_state.pantry, **st.session_state.custom_pantry}
-    
-    if selected and selected != "-- Select --" and selected in all_pantry:
-        info = all_pantry[selected]
-        st.session_state.ing_name = info.get('english_name') or info.get('original_name', selected)
-        st.session_state.ing_cost = info['cost_per_unit']
-        st.session_state.ing_unit = info['unit']
-
-
-def add_ingredient_to_dish():
-    """Add ingredient to current dish"""
-    st.session_state.current_dish_ingredients.append({
-        'name': st.session_state.ing_name,
-        'unit_cost': st.session_state.ing_cost,
-        'unit': st.session_state.ing_unit,
-        'quantity': st.session_state.ing_qty,
-        'yield_pct': st.session_state.ing_yield,
-    })
-    # Clear inputs
-    st.session_state.ing_name = ""
-    st.session_state.ing_qty = 100.0
-    st.session_state.ing_yield = 100
-
-
-def remove_ingredient(idx):
-    """Remove ingredient from current dish"""
-    if 0 <= idx < len(st.session_state.current_dish_ingredients):
-        st.session_state.current_dish_ingredients.pop(idx)
-
-
-def save_dish_to_menu(dish_name, total_cost, ingredients):
-    """Save completed dish to the menu"""
-    st.session_state.saved_dishes.append({
-        'name': dish_name,
-        'cost': total_cost,
-        'ingredients': ingredients.copy(),
-        'english_name': None
-    })
-    st.session_state.current_dish_ingredients = []
-
-
-def remove_dish_from_menu(idx):
-    """Remove dish from saved menu"""
-    if 0 <= idx < len(st.session_state.saved_dishes):
-        st.session_state.saved_dishes.pop(idx)
-
-
-def reset_all():
-    """Clear dishes and custom pantry"""
-    st.session_state.saved_dishes = []
-    st.session_state.current_dish_ingredients = []
-    st.session_state.custom_pantry = {}
-    st.session_state.selling_price = 24000
-
-
-def add_to_pantry(name, cost, unit):
-    """Add new ingredient to custom pantry"""
-    st.session_state.custom_pantry[name] = {
-        'cost_per_unit': cost, 
-        'unit': unit, 
-        'vendor': 'Custom',
-        'original_name': name,
-        'english_name': None
-    }
-
-
-# =============================================================================
-# SIDEBAR - PANTRY MANAGEMENT
-# =============================================================================
-with st.sidebar:
-    st.header("📦 Ingredient Pantry")
-    st.caption("Auto-loaded from invoice data")
-    
-    all_pantry = {**st.session_state.pantry, **st.session_state.custom_pantry}
-    
-    if all_pantry:
-        vendors = {}
-        for name, info in all_pantry.items():
-            vendor = info.get('vendor', 'Unknown')
-            if vendor not in vendors:
-                vendors[vendor] = []
-            vendors[vendor].append((name, info))
-        
-        with st.expander(f"View Pantry ({len(all_pantry)} items)", expanded=False):
-            for vendor, items in sorted(vendors.items()):
-                st.markdown(f"**🏪 {vendor}**")
-                for name, info in items:
-                    eng_name = info.get('english_name')
-                    orig_name = info.get('original_name', name)
-                    
-                    if eng_name and eng_name != orig_name:
-                        st.markdown(f"• **{eng_name}**: ¥{info['cost_per_unit']:,}/{info['unit']}")
-                        st.caption(f"  _{orig_name}_")
-                    else:
-                        st.markdown(f"• {orig_name}: ¥{info['cost_per_unit']:,}/{info['unit']}")
-                st.divider()
-    else:
-        st.warning("No invoice data. Upload invoices in main app.")
-    
-    # Show translation status if exists
-    if 'translate_message' in st.session_state and st.session_state.translate_message:
-        if st.session_state.get('translate_success', False):
-            st.success(st.session_state.translate_message)
-        else:
-            st.error(st.session_state.translate_message)
-        # Clear after showing
-        st.session_state.translate_message = None
-    
-    # Refresh and Translate buttons
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🔄 Refresh", use_container_width=True):
-            st.session_state.pantry = load_pantry_from_invoices()
-            st.cache_data.clear()
-            st.rerun()
-    
-    with col2:
-        if st.button("🌐 Translate", use_container_width=True, help="AI translate ingredient names to English"):
-            if not st.session_state.pantry:
-                st.error("❌ Pantry is empty. Upload invoices in main app first.")
-            else:
-                st.info(f"🔍 Starting translation for {len(st.session_state.pantry)} items...")
-                
-                # Show items to translate
-                items_needing_translation = [n for n, info in st.session_state.pantry.items() if not info.get('english_name')]
-                st.info(f"📝 {len(items_needing_translation)} items need translation")
-                
-                if items_needing_translation:
-                    with st.expander("Items to translate", expanded=True):
-                        for name in items_needing_translation[:5]:
-                            st.write(f"• {name}")
-                        if len(items_needing_translation) > 5:
-                            st.write(f"... and {len(items_needing_translation) - 5} more")
-                
-                # Call translation (without spinner to see debug output)
-                st.info("🌐 Calling Claude API...")
-                updated_pantry, message, success = translate_pantry_ingredients(st.session_state.pantry)
-                
-                # Show result immediately before rerun
-                if success:
-                    st.success(message)
-                else:
-                    st.error(message)
-                
-                st.session_state.pantry = updated_pantry
-                st.session_state.translate_message = message
-                st.session_state.translate_success = success
-                
-                # Add a button to manually rerun after seeing debug
-                if st.button("🔄 Apply & Refresh"):
-                    st.rerun()
-    
-    # Add custom ingredient
-    with st.expander("➕ Add Custom Ingredient", expanded=False):
-        new_pantry_name = st.text_input("Ingredient Name", key="pantry_name")
-        new_pantry_cost = st.number_input("Cost per Unit (¥)", min_value=0, value=1000, key="pantry_cost")
-        new_pantry_unit = st.selectbox("Unit", ['kg', 'g', '100g', 'L', 'ml', 'pc'], key="pantry_unit")
-        if st.button("Add to Pantry"):
-            if new_pantry_name:
-                add_to_pantry(new_pantry_name, new_pantry_cost, new_pantry_unit)
-                st.success(f"Added {new_pantry_name}")
-                st.rerun()
-    
-    st.divider()
-    
-    # Reset button
-    if st.button("🗑️ Reset All", type="secondary", use_container_width=True):
-        reset_all()
+# Top toolbar
+toolbar_col1, toolbar_col2, toolbar_col3, toolbar_col4 = st.columns([1, 1, 1, 1])
+with toolbar_col1:
+    if st.button("🔄 Refresh Pantry", use_container_width=True):
+        st.session_state.pantry = load_pantry_from_invoices()
+        st.cache_data.clear()
         st.rerun()
-
-
-# =============================================================================
-# SECTION 1: DISH CALCULATOR
-# =============================================================================
-st.header("1️⃣ Dish Calculator / 料理原価計算")
-st.markdown("Build a dish by adding ingredients and their quantities")
-
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    dish_name = st.text_input("Dish Name / 料理名", placeholder="e.g., Seasonal Fish Course")
-
-with col2:
-    # Quick-fill from pantry with on_change callback for syncing
-    all_pantry = {**st.session_state.pantry, **st.session_state.custom_pantry}
-    
-    def format_option(key):
-        if key == "-- Select --":
-            return key
-        info = all_pantry.get(key, {})
-        eng = info.get('english_name')
-        orig = info.get('original_name', key)
-        price = info.get('cost_per_unit', 0)
-        unit = info.get('unit', '')
-        if eng and eng != orig:
-            return f"{eng} - ¥{price:,}/{unit}"
-        return f"{orig} - ¥{price:,}/{unit}"
-    
-    st.selectbox(
-        "Quick-fill from Pantry",
-        options=["-- Select --"] + sorted(all_pantry.keys()),
-        format_func=format_option,
-        key="pantry_selector",
-        on_change=on_pantry_select
-    )
-
-# Ingredient input form with SYNCED inputs
-st.subheader("Add Ingredients / 材料を追加")
-
-cols = st.columns([3, 2, 1.5, 1.5, 1.5, 1])
-
-with cols[0]:
-    st.text_input("Ingredient", key="ing_name")
-
-with cols[1]:
-    st.number_input("Cost/Unit (¥)", min_value=0, key="ing_cost")
-
-with cols[2]:
-    unit_options = ['kg', 'g', '100g', 'L', 'ml', 'pc']
-    current_unit = st.session_state.ing_unit
-    default_idx = unit_options.index(current_unit) if current_unit in unit_options else 0
-    st.selectbox("Unit", unit_options, index=default_idx, key="ing_unit")
-
-with cols[3]:
-    unit = st.session_state.ing_unit
-    qty_label = "Qty (g)" if unit in ['kg', 'g', '100g'] else "Qty (ml)" if unit in ['L', 'ml'] else "Qty (pc)"
-    st.number_input(qty_label, min_value=0.0, step=10.0, key="ing_qty")
-
-with cols[4]:
-    st.number_input("Yield %", min_value=1, max_value=100, key="ing_yield")
-
-with cols[5]:
-    st.write("")
-    st.write("")
-    if st.button("➕ Add", use_container_width=True):
-        if st.session_state.ing_name:
-            add_ingredient_to_dish()
-            st.rerun()
-
-# Display current dish ingredients
-if st.session_state.current_dish_ingredients:
-    st.subheader("📝 Current Dish Ingredients")
-    
-    table_data = []
-    total_dish_cost = 0
-    
-    for idx, ing in enumerate(st.session_state.current_dish_ingredients):
-        line_cost = calculate_ingredient_cost(
-            ing['unit_cost'], ing['unit'], ing['quantity'], ing['yield_pct']
-        )
-        total_dish_cost += line_cost
-        table_data.append({
-            '#': idx + 1,
-            'Ingredient': ing['name'],
-            'Cost/Unit': f"¥{ing['unit_cost']:,}/{ing['unit']}",
-            'Quantity': f"{ing['quantity']:.1f}",
-            'Yield': f"{ing['yield_pct']}%",
-            'Line Cost': f"¥{line_cost:,.0f}"
-        })
-    
-    df = pd.DataFrame(table_data)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    
-    # Remove buttons
-    cols = st.columns(len(st.session_state.current_dish_ingredients) + 1)
-    for idx in range(len(st.session_state.current_dish_ingredients)):
-        with cols[idx]:
-            if st.button(f"🗑️ #{idx+1}", key=f"remove_{idx}"):
-                remove_ingredient(idx)
-                st.rerun()
-    
-    st.divider()
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        st.metric("💰 Total Dish Cost / 料理原価", f"¥{total_dish_cost:,.0f}")
-    
-    with col3:
-        if st.button("✅ Save Dish to Menu", type="primary", use_container_width=True):
-            if dish_name:
-                save_dish_to_menu(dish_name, total_dish_cost, st.session_state.current_dish_ingredients)
-                st.success(f"Saved '{dish_name}' to menu!")
-                st.rerun()
+with toolbar_col2:
+    if st.button("🌐 AI Translate", use_container_width=True):
+        with st.spinner("Translating with Claude AI..."):
+            updated, msg, success = translate_pantry_ingredients(st.session_state.pantry)
+            st.session_state.pantry = updated
+            if success:
+                st.success(msg)
             else:
-                st.error("Please enter a dish name")
-else:
-    st.info("👆 Add ingredients above to build your dish")
+                st.error(msg)
+with toolbar_col3:
+    if st.button("🗑️ Clear Recipe", use_container_width=True):
+        st.session_state.current_ingredients = []
+        st.session_state.current_dish_name = ""
+        st.rerun()
+with toolbar_col4:
+    pantry_count = len(st.session_state.pantry)
+    st.metric("Pantry Items", pantry_count)
+
+st.divider()
+
+# =============================================================================
+# SPLIT PANEL: Left (Pantry) | Right (Recipe Canvas)
+# =============================================================================
+left_panel, right_panel = st.columns([0.45, 0.55])
+
+# =============================================================================
+# LEFT PANEL: PANTRY EXPLORER
+# =============================================================================
+with left_panel:
+    st.subheader("📦 Pantry Explorer")
+    
+    pantry = st.session_state.pantry
+    
+    if not pantry:
+        st.warning("No pantry data. Upload invoices in the main app first.")
+    else:
+        # Build DataFrame for filtering
+        pantry_data = []
+        for name, info in pantry.items():
+            display_name = info.get('english_name') or name
+            pantry_data.append({
+                'Name': display_name,
+                'Original': name,
+                'Vendor': info.get('vendor', 'Unknown'),
+                'Category': info.get('category', 'Other'),
+                'Price': info.get('cost_per_unit', 0),
+                'Unit': info.get('unit', 'pc'),
+            })
+        
+        pantry_df = pd.DataFrame(pantry_data)
+        
+        # --- FILTERS ---
+        st.markdown("**Filters**")
+        filter_col1, filter_col2 = st.columns(2)
+        
+        with filter_col1:
+            vendors = ['All'] + sorted(pantry_df['Vendor'].unique().tolist())
+            selected_vendor = st.selectbox("Vendor", vendors, key="vendor_filter")
+        
+        with filter_col2:
+            categories = ['All'] + sorted(pantry_df['Category'].unique().tolist())
+            selected_category = st.selectbox("Category", categories, key="category_filter")
+        
+        # Search box
+        search_term = st.text_input("🔍 Search ingredients", key="search_input", placeholder="Type to search...")
+        
+        # Apply filters
+        filtered_df = pantry_df.copy()
+        if selected_vendor != 'All':
+            filtered_df = filtered_df[filtered_df['Vendor'] == selected_vendor]
+        if selected_category != 'All':
+            filtered_df = filtered_df[filtered_df['Category'] == selected_category]
+        if search_term:
+            mask = (
+                filtered_df['Name'].str.contains(search_term, case=False, na=False) |
+                filtered_df['Original'].str.contains(search_term, case=False, na=False)
+            )
+            filtered_df = filtered_df[mask]
+        
+        st.caption(f"Showing {len(filtered_df)} of {len(pantry_df)} items")
+        
+        # --- RESULTS TABLE ---
+        if not filtered_df.empty:
+            # Format for display
+            display_df = filtered_df[['Name', 'Vendor', 'Price', 'Unit']].copy()
+            display_df['Price'] = display_df['Price'].apply(lambda x: f"¥{x:,.0f}")
+            
+            # Show as interactive table
+            st.dataframe(
+                display_df,
+                hide_index=True,
+                height=250,
+                use_container_width=True
+            )
+            
+            # --- SELECT ITEM ---
+            st.markdown("**Select Item to Transfer**")
+            item_options = filtered_df['Name'].tolist()
+            selected_item_name = st.selectbox(
+                "Choose ingredient",
+                options=item_options,
+                key="pantry_select",
+                label_visibility="collapsed"
+            )
+            
+            if selected_item_name:
+                # Find the original name
+                row = filtered_df[filtered_df['Name'] == selected_item_name].iloc[0]
+                original_name = row['Original']
+                item_info = pantry[original_name]
+                
+                st.session_state.selected_pantry_item = {
+                    'name': selected_item_name,
+                    'original_name': original_name,
+                    'info': item_info
+                }
+                
+                # Show preview card
+                st.markdown("---")
+                st.markdown(f"**Selected:** {selected_item_name}")
+                if selected_item_name != original_name:
+                    st.caption(f"_{original_name}_")
+                
+                prev_col1, prev_col2 = st.columns(2)
+                with prev_col1:
+                    st.metric("Price", f"¥{item_info['cost_per_unit']:,.0f}")
+                with prev_col2:
+                    st.metric("Unit", item_info['unit'])
+                
+                # Transfer controls
+                st.markdown("**Transfer Settings**")
+                trans_col1, trans_col2 = st.columns(2)
+                with trans_col1:
+                    transfer_qty = st.number_input(
+                        "Quantity (g/ml/pc)",
+                        min_value=1,
+                        value=st.session_state.transfer_qty,
+                        step=10,
+                        key="transfer_qty_input"
+                    )
+                with trans_col2:
+                    transfer_yield = st.number_input(
+                        "Yield %",
+                        min_value=1,
+                        max_value=100,
+                        value=st.session_state.transfer_yield,
+                        step=5,
+                        key="transfer_yield_input"
+                    )
+                
+                # Calculate cost preview
+                unit = item_info['unit']
+                cost_per_unit = item_info['cost_per_unit']
+                
+                # Convert based on unit
+                if unit == 'kg':
+                    cost_per_gram = cost_per_unit / 1000
+                elif unit == '100g':
+                    cost_per_gram = cost_per_unit / 100
+                elif unit == 'L':
+                    cost_per_gram = cost_per_unit / 1000
+                else:
+                    cost_per_gram = cost_per_unit  # pc, etc.
+                
+                raw_cost = transfer_qty * cost_per_gram
+                yield_adjusted_cost = raw_cost / (transfer_yield / 100)
+                
+                st.info(f"💰 Estimated cost: **¥{yield_adjusted_cost:,.0f}** (yield-adjusted)")
+                
+                # TRANSFER BUTTON
+                if st.button("➡️ TRANSFER TO RECIPE", type="primary", use_container_width=True):
+                    new_ingredient = {
+                        'name': selected_item_name,
+                        'original_name': original_name,
+                        'quantity': transfer_qty,
+                        'unit': 'g',
+                        'yield_pct': transfer_yield,
+                        'cost': yield_adjusted_cost,
+                        'raw_cost': raw_cost
+                    }
+                    st.session_state.current_ingredients.append(new_ingredient)
+                    st.success(f"Added {selected_item_name}!")
+                    st.rerun()
+        else:
+            st.info("No items match your filters.")
+
+
+# =============================================================================
+# RIGHT PANEL: RECIPE CANVAS
+# =============================================================================
+with right_panel:
+    st.subheader("👨‍🍳 Recipe Canvas")
+    
+    # Dish name input
+    dish_name = st.text_input(
+        "Dish Name / 料理名",
+        value=st.session_state.current_dish_name,
+        placeholder="e.g., Autumn Amuse Bouche",
+        key="dish_name_input"
+    )
+    st.session_state.current_dish_name = dish_name
+    
+    st.markdown("---")
+    
+    # Current ingredients
+    st.markdown("**Current Ingredients**")
+    
+    ingredients = st.session_state.current_ingredients
+    
+    if not ingredients:
+        st.info("👈 Select ingredients from Pantry Explorer and transfer them here")
+    else:
+        # Build ingredients table
+        ing_data = []
+        for i, ing in enumerate(ingredients):
+            ing_data.append({
+                'Ingredient': ing['name'],
+                'Qty': f"{ing['quantity']}g",
+                'Yield': f"{ing['yield_pct']}%",
+                'Cost': f"¥{ing['cost']:,.0f}",
+                'idx': i
+            })
+        
+        ing_df = pd.DataFrame(ing_data)
+        
+        # Display with remove buttons
+        for i, ing in enumerate(ingredients):
+            col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 0.5])
+            with col1:
+                st.write(ing['name'])
+            with col2:
+                st.write(f"{ing['quantity']}g")
+            with col3:
+                st.write(f"{ing['yield_pct']}%")
+            with col4:
+                st.write(f"¥{ing['cost']:,.0f}")
+            with col5:
+                if st.button("🗑️", key=f"remove_{i}"):
+                    st.session_state.current_ingredients.pop(i)
+                    st.rerun()
+        
+        st.markdown("---")
+        
+        # Totals
+        total_cost = sum(ing['cost'] for ing in ingredients)
+        
+        total_col1, total_col2 = st.columns(2)
+        with total_col1:
+            st.metric("Total Dish Cost", f"¥{total_cost:,.0f}")
+        with total_col2:
+            # Show food cost % if selling price set
+            if 'selling_price' in st.session_state and st.session_state.selling_price > 0:
+                food_cost_pct = (total_cost / st.session_state.selling_price) * 100
+                color = "normal" if food_cost_pct <= 35 else "inverse"
+                st.metric("Food Cost %", f"{food_cost_pct:.1f}%", delta_color=color)
+        
+        st.markdown("---")
+        
+        # Save dish button
+        save_col1, save_col2 = st.columns(2)
+        with save_col1:
+            if st.button("✅ Save Dish to Menu", type="primary", use_container_width=True):
+                if dish_name:
+                    new_dish = {
+                        'name': dish_name,
+                        'ingredients': ingredients.copy(),
+                        'cost': total_cost,
+                        'created': datetime.now().strftime("%Y-%m-%d %H:%M")
+                    }
+                    st.session_state.saved_dishes.append(new_dish)
+                    st.session_state.current_ingredients = []
+                    st.session_state.current_dish_name = ""
+                    st.success(f"Saved '{dish_name}' to menu!")
+                    st.rerun()
+                else:
+                    st.error("Please enter a dish name")
+        
+        with save_col2:
+            if st.button("🗑️ Clear All", use_container_width=True):
+                st.session_state.current_ingredients = []
+                st.rerun()
 
 
 # =============================================================================
@@ -599,156 +529,92 @@ st.header("2️⃣ Menu Assembler / メニュー構成")
 if not st.session_state.saved_dishes:
     st.info("No dishes saved yet. Create dishes above and save them to build your menu.")
 else:
-    # Menu settings row
-    col1, col2, col3 = st.columns([1, 1, 1])
+    # Menu settings
+    menu_col1, menu_col2, menu_col3 = st.columns(3)
     
-    with col1:
+    with menu_col1:
         menu_type = st.selectbox(
-            "Menu Type / メニュータイプ",
-            ['Dinner', 'Lunch', 'Special'],
-            key="menu_type_select"
+            "Menu Type",
+            ['Dinner Tasting', 'Lunch Tasting', 'A la Carte'],
+            key="menu_type"
         )
-        st.session_state.menu_type = menu_type
     
-    with col2:
-        default_prices = {'Dinner': 24000, 'Lunch': 8500, 'Special': 32000}
+    with menu_col2:
+        default_prices = {'Dinner Tasting': 24000, 'Lunch Tasting': 8500, 'A la Carte': 5000}
         selling_price = st.number_input(
-            "Selling Price (¥) / 販売価格",
+            "Selling Price (¥)",
             min_value=0,
             value=default_prices.get(menu_type, 24000),
             step=500,
-            key="selling_price_input"
+            key="selling_price"
         )
-        st.session_state.selling_price = selling_price
     
-    with col3:
-        target_cost_pct = st.slider("Target Food Cost %", min_value=20, max_value=50, value=30)
+    with menu_col3:
+        target_cost = st.slider("Target Food Cost %", 20, 50, 30)
     
-    st.subheader("📋 Menu Dishes / メニュー料理")
+    st.markdown("---")
     
     # Display saved dishes
     total_menu_cost = 0
-    dish_costs = []
     
-    for idx, dish in enumerate(st.session_state.saved_dishes):
+    for i, dish in enumerate(st.session_state.saved_dishes):
         total_menu_cost += dish['cost']
         
-        # Use English name if available
-        display_name = dish.get('english_name') or dish['name']
-        dish_costs.append({'Dish': display_name, 'Cost': dish['cost']})
-        
-        col1, col2, col3 = st.columns([3, 1, 0.5])
-        with col1:
-            # Show both names if translated
-            if dish.get('english_name') and dish['english_name'] != dish['name']:
-                expander_title = f"**{dish['english_name']}** ({dish['name']}) - ¥{dish['cost']:,.0f}"
-            else:
-                expander_title = f"**{dish['name']}** - ¥{dish['cost']:,.0f}"
-            
-            with st.expander(expander_title):
+        dish_col1, dish_col2, dish_col3 = st.columns([3, 1, 0.5])
+        with dish_col1:
+            with st.expander(f"**{dish['name']}** - ¥{dish['cost']:,.0f}"):
                 for ing in dish['ingredients']:
-                    line_cost = calculate_ingredient_cost(
-                        ing['unit_cost'], ing['unit'], ing['quantity'], ing['yield_pct']
-                    )
-                    st.caption(f"• {ing['name']}: {ing['quantity']:.0f}{ing['unit'][:1]} @ ¥{ing['unit_cost']:,}/{ing['unit']} = ¥{line_cost:,.0f}")
-        
-        with col2:
-            st.metric("Cost", f"¥{dish['cost']:,.0f}", label_visibility="collapsed")
-        
-        with col3:
-            if st.button("🗑️", key=f"del_dish_{idx}"):
-                remove_dish_from_menu(idx)
+                    st.write(f"• {ing['name']}: {ing['quantity']}g @ {ing['yield_pct']}% yield = ¥{ing['cost']:,.0f}")
+        with dish_col2:
+            st.write(f"¥{dish['cost']:,.0f}")
+        with dish_col3:
+            if st.button("🗑️", key=f"del_dish_{i}"):
+                st.session_state.saved_dishes.pop(i)
                 st.rerun()
     
-    st.divider()
+    st.markdown("---")
     
-    # Summary metrics
-    food_cost_pct = (total_menu_cost / selling_price * 100) if selling_price > 0 else 0
-    gross_profit = selling_price - total_menu_cost
-    gross_profit_pct = (gross_profit / selling_price * 100) if selling_price > 0 else 0
+    # Menu totals
+    result_col1, result_col2, result_col3 = st.columns(3)
     
-    col1, col2, col3, col4 = st.columns(4)
+    with result_col1:
+        st.metric("Total Menu Cost", f"¥{total_menu_cost:,.0f}")
     
-    with col1:
-        st.metric("Selling Price / 販売価格", f"¥{selling_price:,}")
+    with result_col2:
+        if selling_price > 0:
+            actual_cost_pct = (total_menu_cost / selling_price) * 100
+            delta = actual_cost_pct - target_cost
+            st.metric(
+                "Actual Food Cost %",
+                f"{actual_cost_pct:.1f}%",
+                delta=f"{delta:+.1f}%",
+                delta_color="inverse"
+            )
     
-    with col2:
-        st.metric("Total Food Cost / 原価合計", f"¥{total_menu_cost:,.0f}")
+    with result_col3:
+        gross_profit = selling_price - total_menu_cost
+        st.metric("Gross Profit", f"¥{gross_profit:,.0f}")
     
-    with col3:
-        delta_color = "inverse" if food_cost_pct > target_cost_pct else "normal"
-        st.metric(
-            "Food Cost %", 
-            f"{food_cost_pct:.1f}%",
-            delta=f"{food_cost_pct - target_cost_pct:+.1f}% vs target" if abs(food_cost_pct - target_cost_pct) > 0.5 else None,
-            delta_color=delta_color
-        )
-    
-    with col4:
-        st.metric("Gross Profit / 粗利", f"¥{gross_profit:,.0f}", help=f"{gross_profit_pct:.1f}%")
-    
-    # Warning/Success
-    if food_cost_pct > 40:
-        st.error(f"⚠️ Food cost ({food_cost_pct:.1f}%) exceeds 40%! Consider reducing costs or increasing price.")
-    elif food_cost_pct > target_cost_pct:
-        st.warning(f"⚡ Food cost ({food_cost_pct:.1f}%) is above target ({target_cost_pct}%)")
-    else:
-        st.success(f"✅ Food cost ({food_cost_pct:.1f}%) is within target ({target_cost_pct}%)")
-    
-    # Charts
-    if len(dish_costs) > 1:
-        st.subheader("📊 Cost Breakdown by Dish")
+    # Visualization
+    if st.session_state.saved_dishes:
+        st.subheader("📊 Cost Breakdown")
         
-        df_costs = pd.DataFrame(dish_costs)
-        df_costs['Percentage'] = df_costs['Cost'] / df_costs['Cost'].sum() * 100
+        chart_data = pd.DataFrame([
+            {'Dish': d['name'], 'Cost': d['cost']}
+            for d in st.session_state.saved_dishes
+        ])
         
         fig = px.pie(
-            df_costs, 
-            values='Cost', 
+            chart_data,
+            values='Cost',
             names='Dish',
-            title='Food Cost Distribution',
-            hole=0.4,
-            color_discrete_sequence=px.colors.qualitative.Set2
+            title='Cost Distribution by Dish'
         )
-        fig.update_traces(
-            textposition='inside',
-            textinfo='percent+label',
-            hovertemplate='<b>%{label}</b><br>Cost: ¥%{value:,.0f}<br>Share: %{percent}<extra></extra>'
-        )
-        fig.update_layout(height=400)
-        
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Bar chart
-        st.subheader("📈 Cost Analysis")
-        
-        budget_per_dish = (selling_price * target_cost_pct / 100) / len(dish_costs)
-        df_costs['Budget'] = budget_per_dish
-        df_costs['Over Budget'] = df_costs['Cost'] > budget_per_dish
-        
-        fig2 = px.bar(
-            df_costs,
-            x='Dish',
-            y='Cost',
-            title='Dish Costs vs Average Budget',
-            color='Over Budget',
-            color_discrete_map={True: '#e74c3c', False: '#2ecc71'}
-        )
-        fig2.add_hline(
-            y=budget_per_dish, 
-            line_dash="dash", 
-            line_color="orange",
-            annotation_text=f"Avg Budget: ¥{budget_per_dish:,.0f}"
-        )
-        fig2.update_layout(height=350, showlegend=False)
-        fig2.update_yaxes(tickprefix='¥', tickformat=',.0f')
-        
-        st.plotly_chart(fig2, use_container_width=True)
 
 
 # =============================================================================
 # FOOTER
 # =============================================================================
 st.divider()
-all_pantry_count = len(st.session_state.pantry) + len(st.session_state.custom_pantry)
-st.caption(f"Session: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Dishes: {len(st.session_state.saved_dishes)} | Pantry: {all_pantry_count} items")
+st.caption("💡 Tip: Use 🌐 AI Translate to convert Japanese ingredient names to English")
