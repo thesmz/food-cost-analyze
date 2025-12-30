@@ -444,7 +444,7 @@ def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yi
     
     # Filter caviar data
     caviar_sales = sales_df[sales_df['name'].str.contains('Egg Toast Caviar', case=False, na=False)] if not sales_df.empty else pd.DataFrame()
-    caviar_invoices = invoices_df[invoices_df['item_name'].str.contains('キャビア|KAVIARI|caviar', case=False, na=False)] if not invoices_df.empty else pd.DataFrame()
+    caviar_invoices = invoices_df[invoices_df['item_name'].str.contains('キャビア|キャヴィア|KAVIARI|caviar', case=False, na=False)] if not invoices_df.empty else pd.DataFrame()
     
     if caviar_sales.empty and caviar_invoices.empty:
         st.warning("No caviar data available for analysis in selected period")

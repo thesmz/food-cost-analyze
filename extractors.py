@@ -271,12 +271,14 @@ def extract_invoice_from_excel(uploaded_file) -> list:
                     qty_val = float(quantity) if pd.notna(quantity) else 0
                     unit_str = str(unit).strip()
                     
-                    # For caviar, convert cans to grams
+                    # For caviar items, keep original name and units
+                    # Don't convert cans to grams - keep ¥/can or ¥/100g
                     if 'キャビア' in product_name or 'KAVIARI' in product_name or 'キャヴィア' in product_name:
+                        # Keep the unit as-is (缶 = can = 100g)
                         if unit_str == '缶':
-                            qty_val = qty_val * 100  # 100g per can
-                            unit_str = 'g'
-                        product_name = "KAVIARI キャビア クリスタル 100g"
+                            unit_str = '100g'  # 1 can = 100g, price is per can
+                        # Don't modify qty_val - keep as number of cans
+                        # Don't normalize product_name - keep original for distinction
                     
                     records.append({
                         'vendor': 'フレンチ・エフ・アンド・ビー (French F&B Japan)',
