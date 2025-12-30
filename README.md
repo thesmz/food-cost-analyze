@@ -1,4 +1,4 @@
-# Purchasing Evaluation System
+# The Shinmonzen - Purchasing Evaluation System
 
 A comprehensive tool for analyzing ingredient purchases vs dish sales to evaluate waste and cost efficiency.
 
