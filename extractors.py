@@ -14,6 +14,13 @@ from io import StringIO
 import pandas as pd
 import streamlit as st
 
+# Import vendor name mapping
+try:
+    from config import get_clean_vendor_name
+except ImportError:
+    def get_clean_vendor_name(name):
+        return name
+
 # Optional imports with fallbacks
 try:
     import pdfplumber
@@ -262,10 +269,12 @@ Extract all items now:"""
         
         # Convert to our record format
         records = []
-        vendor_name = data.get('vendor_name', 'Unknown Vendor')
+        vendor_name_raw = data.get('vendor_name', 'Unknown Vendor')
+        vendor_name = get_clean_vendor_name(vendor_name_raw)  # Clean the vendor name
         invoice_date = data.get('invoice_date', datetime.now().strftime('%Y-%m-%d'))
         
-        debug_log(f"   → Vendor: {vendor_name}")
+        debug_log(f"   → Vendor (raw): {vendor_name_raw}")
+        debug_log(f"   → Vendor (clean): {vendor_name}")
         debug_log(f"   → Invoice date: {invoice_date}")
         debug_log(f"   → Items found: {len(data.get('items', []))}")
         

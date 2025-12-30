@@ -408,3 +408,66 @@ def delete_data_by_date_range(supabase: Client, start_date: date, end_date: date
         st.error(f"Error deleting data: {e}")
     
     return deleted
+
+
+def get_unique_vendors(supabase: Client) -> list:
+    """Get list of unique vendors from invoices table"""
+    if not supabase:
+        return []
+    
+    try:
+        result = supabase.table('invoices').select('vendor').execute()
+        if result.data:
+            vendors = set(row['vendor'] for row in result.data if row.get('vendor'))
+            return sorted(list(vendors))
+    except Exception as e:
+        print(f"Error getting vendors: {e}")
+    
+    return []
+
+
+def get_invoice_count_by_vendor(supabase: Client, vendor: str) -> int:
+    """Get count of invoices for a specific vendor"""
+    if not supabase:
+        return 0
+    
+    try:
+        result = supabase.table('invoices').select('id', count='exact').eq('vendor', vendor).execute()
+        return result.count if result.count else 0
+    except Exception as e:
+        print(f"Error counting invoices: {e}")
+        return 0
+
+
+def delete_invoices_by_vendor(supabase: Client, vendor: str) -> int:
+    """Delete all invoices from a specific vendor. Returns count deleted."""
+    if not supabase:
+        return 0
+    
+    try:
+        # First get count
+        count_result = supabase.table('invoices').select('id', count='exact').eq('vendor', vendor).execute()
+        count = count_result.count if count_result.count else 0
+        
+        if count == 0:
+            return 0
+        
+        # Delete records
+        result = supabase.table('invoices').delete().eq('vendor', vendor).execute()
+        
+        print(f"[DB] Deleted {count} invoices from vendor: {vendor}")
+        return count
+        
+    except Exception as e:
+        print(f"[DB] Error deleting invoices: {e}")
+        st.error(f"Error deleting invoices: {e}")
+        return 0
+
+
+def delete_invoices_by_vendors(supabase: Client, vendors: list) -> dict:
+    """Delete invoices from multiple vendors. Returns dict of vendor: count deleted."""
+    results = {}
+    for vendor in vendors:
+        count = delete_invoices_by_vendor(supabase, vendor)
+        results[vendor] = count
+    return results

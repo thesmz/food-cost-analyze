@@ -16,7 +16,7 @@ from config import VENDOR_CONFIG, YIELD_RATES, THRESHOLDS
 from database import (
     init_supabase, save_invoices, save_sales, 
     load_invoices, load_sales, get_date_range, get_data_summary,
-    delete_data_by_date_range
+    delete_data_by_date_range, get_unique_vendors, delete_invoices_by_vendor
 )
 
 st.set_page_config(
@@ -139,11 +139,41 @@ def main():
         # Data management
         with st.expander("🗑️ Data Management / データ管理"):
             st.warning("⚠️ Danger zone / 危険ゾーン")
+            
+            # Delete by date range
+            st.markdown("**Delete by Date Range:**")
             if st.button("Delete data in selected range", type="secondary"):
                 if supabase:
                     deleted = delete_data_by_date_range(supabase, start_date, end_date)
                     st.info(f"Deleted {deleted['invoices']} invoices, {deleted['sales']} sales")
                     st.rerun()
+            
+            st.markdown("---")
+            
+            # Delete by vendor
+            st.markdown("**Delete Invoices by Vendor:**")
+            if supabase:
+                vendors = get_unique_vendors(supabase)
+                if vendors:
+                    selected_vendors = st.multiselect(
+                        "Select vendors to delete",
+                        options=vendors,
+                        help="Select one or more vendors to delete all their invoices"
+                    )
+                    
+                    if selected_vendors:
+                        st.warning(f"⚠️ Will delete ALL invoices from: {', '.join(selected_vendors)}")
+                        if st.button("🗑️ DELETE Selected Vendors", type="primary"):
+                            total_deleted = 0
+                            for vendor in selected_vendors:
+                                count = delete_invoices_by_vendor(supabase, vendor)
+                                total_deleted += count
+                                st.write(f"  • {vendor}: {count} records deleted")
+                            st.success(f"✅ Total deleted: {total_deleted} invoice records")
+                            st.cache_data.clear()
+                            st.rerun()
+                else:
+                    st.info("No vendors found in database")
     
     # =========================================================================
     # MAIN PAGE - Configuration & Settings Expander (MOVED FROM SIDEBAR)
