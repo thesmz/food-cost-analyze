@@ -146,6 +146,13 @@ Return ONLY valid JSON: {{"original": "English"}}"""
 @st.cache_data(ttl=300)
 def load_pantry_from_invoices():
     """Load ingredient prices from invoice data"""
+    # Import vendor name mapper
+    try:
+        from config import get_clean_vendor_name
+    except ImportError:
+        def get_clean_vendor_name(name):
+            return name
+    
     supabase = init_supabase()
     if not supabase:
         return {}
@@ -167,23 +174,20 @@ def load_pantry_from_invoices():
         # Determine category based on patterns
         category = 'Other'
         item_lower = item_name.lower()
-        if any(x in item_lower for x in ['牛', 'ヒレ', 'beef', 'wagyu', '肉']):
+        if any(x in item_lower for x in ['牛', 'ヒレ', 'beef', 'wagyu', '肉', 'duck', '鴨', 'pork', '豚']):
             category = 'Meat'
-        elif any(x in item_lower for x in ['キャビア', 'caviar', 'kaviari']):
+        elif any(x in item_lower for x in ['キャビア', 'caviar', 'kaviari', '魚', 'fish', 'うに', '鮪', '鯛', 'サーモン', 'ホタテ', '蛤', '海老']):
             category = 'Seafood'
-        elif any(x in item_lower for x in ['バター', 'butter', 'ブール', 'チーズ', 'cheese']):
+        elif any(x in item_lower for x in ['バター', 'butter', 'ブール', 'チーズ', 'cheese', 'cream', 'クリーム', 'milk', '牛乳']):
             category = 'Dairy'
-        elif any(x in item_lower for x in ['ヴィネガー', 'vinegar', 'オイル', 'oil']):
+        elif any(x in item_lower for x in ['ヴィネガー', 'vinegar', 'オイル', 'oil', 'sauce', 'ソース']):
             category = 'Condiments'
-        elif any(x in item_lower for x in ['ジロール', 'mushroom', 'きのこ', 'truffle']):
+        elif any(x in item_lower for x in ['ジロール', 'mushroom', 'きのこ', 'truffle', 'トリュフ', '野菜', 'vegetable']):
             category = 'Produce'
         
-        vendor = row.get('vendor', 'Unknown')
-        # Simplify vendor names
-        if 'ひら山' in vendor or 'Hirayama' in vendor.lower():
-            vendor = 'Meat Shop Hirayama'
-        elif 'フレンチ' in vendor or 'French' in vendor:
-            vendor = 'French F&B Japan'
+        # Clean vendor name using mapping
+        vendor_raw = row.get('vendor', 'Unknown')
+        vendor = get_clean_vendor_name(vendor_raw)
         
         # Calculate cost per unit
         qty = float(row.get('quantity', 1) or 1)
