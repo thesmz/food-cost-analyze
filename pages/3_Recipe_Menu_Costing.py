@@ -27,40 +27,78 @@ st.markdown("*Build menus by calculating dish costs from ingredient breakdowns*"
 
 
 # =============================================================================
-# TRANSLATION FUNCTION
+# TRANSLATION FUNCTION (Using Claude API)
 # =============================================================================
-def translate_text(text, target_lang='en'):
-    """
-    Translate text using googletrans or fallback.
-    Returns original text if translation fails.
-    """
-    try:
-        from googletrans import Translator
-        translator = Translator()
-        result = translator.translate(text, dest=target_lang)
-        return result.text
-    except Exception:
-        # Fallback: return original text
-        return text
-
-
 def translate_dish_names(dishes):
-    """Translate dish names from Japanese to English"""
-    translated = []
-    for dish in dishes:
-        original_name = dish['name']
-        # Check if already has English name
-        if dish.get('english_name'):
-            translated.append(dish)
-            continue
-        
-        # Translate
-        eng_name = translate_text(original_name)
-        dish_copy = dish.copy()
-        dish_copy['english_name'] = eng_name if eng_name != original_name else None
-        translated.append(dish_copy)
+    """Translate dish names from Japanese to English using Claude API"""
+    import requests
+    import json
     
-    return translated
+    # Get API key from Streamlit secrets
+    try:
+        api_key = st.secrets.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            st.warning("ANTHROPIC_API_KEY not found in secrets. Translation skipped.")
+            return dishes
+    except Exception:
+        st.warning("Could not access secrets. Translation skipped.")
+        return dishes
+    
+    # Collect names to translate
+    names_to_translate = [d['name'] for d in dishes if not d.get('english_name')]
+    
+    if not names_to_translate:
+        st.info("All dishes already have English names.")
+        return dishes
+    
+    # Build prompt
+    prompt = f"""Translate these Japanese dish/food names to English. Return ONLY a JSON object mapping original name to English translation. Keep it concise and culinary-appropriate.
+
+Names:
+{json.dumps(names_to_translate, ensure_ascii=False)}
+
+Return format: {{"Japanese Name": "English Name"}}
+JSON only, no explanation:"""
+
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01"
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 1000,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            content = result['content'][0]['text']
+            
+            # Parse JSON from response
+            import re
+            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+            if json_match:
+                translations = json.loads(json_match.group())
+                
+                # Apply translations to dishes
+                for dish in dishes:
+                    if dish['name'] in translations:
+                        dish['english_name'] = translations[dish['name']]
+                
+                return dishes
+        else:
+            st.error(f"API error: {response.status_code}")
+            
+    except Exception as e:
+        st.error(f"Translation error: {str(e)[:100]}")
+    
+    return dishes
 
 
 # =============================================================================
