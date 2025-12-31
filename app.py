@@ -240,20 +240,26 @@ def main():
         invoices_df = load_invoices(supabase, start_date, end_date)
         sales_df = load_sales(supabase, start_date, end_date)
     
-    # Process uploaded files with error handling and progress bar
+    # Initialize session state for pending uploads
+    if 'pending_sales' not in st.session_state:
+        st.session_state.pending_sales = None
+    if 'pending_invoices' not in st.session_state:
+        st.session_state.pending_invoices = None
+    if 'extraction_log' not in st.session_state:
+        st.session_state.extraction_log = []
+    
+    # Process uploaded files (EXTRACT ONLY - don't save yet)
     if sales_files or invoice_files:
-        # Create a debug expander to show extraction details
-        debug_expander = st.expander("🔍 Processing Debug Log", expanded=True)
+        st.subheader("📤 File Processing")
+        
+        debug_messages = []
         
         try:
-            sales_count = 0
-            invoice_count = 0
-            debug_messages = []
-            
             total_files = len(sales_files or []) + len(invoice_files or [])
-            progress_bar = st.progress(0, text="Processing files...")
+            progress_bar = st.progress(0, text="Extracting data from files...")
             current_file = 0
             
+            # Process sales files
             if sales_files:
                 sales_list = []
                 for file in sales_files:
@@ -263,27 +269,21 @@ def main():
                     
                     df = extract_sales_data(file)
                     
-                    if isinstance(df, pd.DataFrame):
-                        debug_messages.append(f"   → Returned DataFrame with {len(df)} rows")
-                        if not df.empty:
-                            sales_list.append(df)
+                    # Get debug log from extractor
+                    extractor_log = get_debug_log()
+                    debug_messages.extend(extractor_log)
+                    
+                    if isinstance(df, pd.DataFrame) and not df.empty:
+                        debug_messages.append(f"   → ✅ Extracted {len(df)} sales records")
+                        sales_list.append(df)
                     else:
-                        debug_messages.append(f"   → Returned: {type(df)}")
+                        debug_messages.append(f"   → ⚠️ No records extracted")
                 
-                if len(sales_list) > 0:
-                    new_sales = pd.concat(sales_list, ignore_index=True)
-                    debug_messages.append(f"✅ Total sales records extracted: {len(new_sales)}")
-                    if supabase:
-                        saved = save_sales(supabase, new_sales)
-                        debug_messages.append(f"   → Saved to database: {saved}")
-                    if sales_df.empty:
-                        sales_df = new_sales
-                    else:
-                        sales_df = pd.concat([sales_df, new_sales], ignore_index=True)
-                    sales_count = len(new_sales)
-                else:
-                    debug_messages.append("⚠️ No sales records extracted from files")
+                if sales_list:
+                    st.session_state.pending_sales = pd.concat(sales_list, ignore_index=True)
+                    debug_messages.append(f"✅ Total sales ready to save: {len(st.session_state.pending_sales)}")
             
+            # Process invoice files
             if invoice_files:
                 invoice_records = []
                 for file in invoice_files:
@@ -291,80 +291,105 @@ def main():
                     progress_bar.progress(current_file / total_files, text=f"Processing {file.name}...")
                     debug_messages.append(f"📄 Processing invoice file: {file.name}")
                     
-                    # extract_invoice_data returns a LIST
                     records = extract_invoice_data(file)
                     
                     # Get debug log from extractor
                     extractor_log = get_debug_log()
                     debug_messages.extend(extractor_log)
                     
-                    debug_messages.append(f"   → Returned: {type(records).__name__}")
-                    
-                    # Handle both list and DataFrame returns
-                    if isinstance(records, pd.DataFrame):
-                        debug_messages.append(f"   → DataFrame with {len(records)} rows")
-                        if not records.empty:
-                            invoice_records.extend(records.to_dict('records'))
-                    elif isinstance(records, list):
-                        debug_messages.append(f"   → List with {len(records)} items")
-                        if len(records) > 0:
-                            invoice_records.extend(records)
-                            # Show first record as sample
-                            debug_messages.append(f"   → Sample: {records[0]}")
+                    if isinstance(records, list) and len(records) > 0:
+                        debug_messages.append(f"   → ✅ Extracted {len(records)} invoice records")
+                        invoice_records.extend(records)
+                    elif isinstance(records, pd.DataFrame) and not records.empty:
+                        debug_messages.append(f"   → ✅ Extracted {len(records)} invoice records")
+                        invoice_records.extend(records.to_dict('records'))
                     else:
-                        debug_messages.append(f"   → Unexpected type: {type(records)}")
+                        debug_messages.append(f"   → ⚠️ No records extracted")
                 
-                debug_messages.append(f"📊 Total invoice records collected: {len(invoice_records)}")
-                
-                if len(invoice_records) > 0:
-                    new_invoices = pd.DataFrame(invoice_records)
-                    debug_messages.append(f"   → DataFrame columns: {list(new_invoices.columns)}")
-                    if supabase:
-                        saved = save_invoices(supabase, new_invoices)
-                        debug_messages.append(f"   → Saved to database: {saved}")
-                    else:
-                        debug_messages.append("   → No Supabase connection")
-                    if invoices_df.empty:
-                        invoices_df = new_invoices
-                    else:
-                        invoices_df = pd.concat([invoices_df, new_invoices], ignore_index=True)
-                    invoice_count = len(new_invoices)
-                else:
-                    debug_messages.append("⚠️ No invoice records extracted from files")
+                if invoice_records:
+                    st.session_state.pending_invoices = pd.DataFrame(invoice_records)
+                    debug_messages.append(f"✅ Total invoices ready to save: {len(st.session_state.pending_invoices)}")
             
-            progress_bar.progress(1.0, text="Complete!")
-            
-            # Show debug log
-            with debug_expander:
-                for msg in debug_messages:
-                    st.text(msg)
-            
-            # Set success message in session state so it persists
-            st.session_state.upload_completed = True
-            st.session_state.upload_message = f"✅ Files processed! {sales_count} sales records, {invoice_count} invoice records saved."
-            st.session_state.upload_error = ""
-            st.session_state.debug_log = debug_messages
-            st.session_state.upload_key += 1
-            
-            # Don't rerun immediately so user can see debug log
-            st.success(f"✅ Files processed! {sales_count} sales records, {invoice_count} invoice records saved.")
-            if st.button("🔄 Refresh to see data"):
-                st.rerun()
+            progress_bar.progress(1.0, text="Extraction complete!")
+            st.session_state.extraction_log = debug_messages
             
         except Exception as e:
             import traceback
-            error_trace = traceback.format_exc()
-            # Set error message in session state
-            st.session_state.upload_error = f"❌ Error processing files: {str(e)}"
-            st.session_state.upload_completed = False
-            st.session_state.upload_key += 1
-            
-            with debug_expander:
-                st.error(f"Exception: {str(e)}")
-                st.code(error_trace)
+            debug_messages.append(f"❌ Error: {str(e)}")
+            debug_messages.append(traceback.format_exc())
+            st.session_state.extraction_log = debug_messages
+    
+    # Show debug log
+    if st.session_state.extraction_log:
+        with st.expander("🔍 Extraction Debug Log", expanded=False):
+            for msg in st.session_state.extraction_log:
+                st.text(msg)
+    
+    # Show pending data preview and save button
+    has_pending = (st.session_state.pending_sales is not None and len(st.session_state.pending_sales) > 0) or \
+                  (st.session_state.pending_invoices is not None and len(st.session_state.pending_invoices) > 0)
+    
+    if has_pending:
+        st.subheader("📋 Data Preview (Not Yet Saved)")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.session_state.pending_sales is not None and len(st.session_state.pending_sales) > 0:
+                pending_sales = st.session_state.pending_sales
+                st.markdown(f"**Sales Records: {len(pending_sales)}**")
+                st.dataframe(pending_sales.head(10), use_container_width=True)
+                if len(pending_sales) > 10:
+                    st.caption(f"...and {len(pending_sales) - 10} more rows")
+        
+        with col2:
+            if st.session_state.pending_invoices is not None and len(st.session_state.pending_invoices) > 0:
+                pending_inv = st.session_state.pending_invoices
+                st.markdown(f"**Invoice Records: {len(pending_inv)}**")
+                # Show relevant columns only
+                display_cols = [c for c in ['vendor', 'date', 'item_name', 'quantity', 'amount'] if c in pending_inv.columns]
+                st.dataframe(pending_inv[display_cols].head(10), use_container_width=True)
+                if len(pending_inv) > 10:
+                    st.caption(f"...and {len(pending_inv) - 10} more rows")
+        
+        # Save buttons
+        st.markdown("---")
+        btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 2])
+        
+        with btn_col1:
+            if st.button("💾 Save to Database", type="primary", use_container_width=True):
+                if supabase:
+                    saved_sales = 0
+                    saved_invoices = 0
+                    
+                    if st.session_state.pending_sales is not None:
+                        saved_sales = save_sales(supabase, st.session_state.pending_sales)
+                    
+                    if st.session_state.pending_invoices is not None:
+                        saved_invoices = save_invoices(supabase, st.session_state.pending_invoices)
+                    
+                    st.success(f"✅ Saved {saved_sales} sales, {saved_invoices} invoices to database!")
+                    
+                    # Clear pending data
+                    st.session_state.pending_sales = None
+                    st.session_state.pending_invoices = None
+                    st.session_state.extraction_log = []
+                    st.session_state.upload_key += 1
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error("❌ Database not connected")
+        
+        with btn_col2:
+            if st.button("🗑️ Discard", use_container_width=True):
+                st.session_state.pending_sales = None
+                st.session_state.pending_invoices = None
+                st.session_state.extraction_log = []
+                st.session_state.upload_key += 1
+                st.rerun()
     
     # Check data
-    if sales_df.empty and invoices_df.empty:
+    if sales_df.empty and invoices_df.empty and not has_pending:
         st.info("📤 Upload sales reports and invoices to begin, or adjust date filter.")
         return
     

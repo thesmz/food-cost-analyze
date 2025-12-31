@@ -754,80 +754,161 @@ def extract_sales_data(uploaded_file) -> pd.DataFrame:
     Extract sales data from CSV file (POS export format)
     Returns DataFrame with columns: code, name, category, qty, price, net_total
     """
+    debug_log(f"📊 Sales extraction starting: {uploaded_file.name}")
+    
     try:
         content = uploaded_file.read()
         uploaded_file.seek(0)
         
+        debug_log(f"   → Read {len(content)} bytes")
+        
         # Try different encodings
-        for encoding in ['utf-8', 'shift_jis', 'cp932', 'utf-8-sig']:
+        text = None
+        for encoding in ['utf-8', 'utf-8-sig', 'shift_jis', 'cp932']:
             try:
                 if isinstance(content, bytes):
                     text = content.decode(encoding)
                 else:
                     text = content
+                debug_log(f"   → Decoded with {encoding}")
                 break
             except UnicodeDecodeError:
                 continue
-        else:
+        
+        if text is None:
+            debug_log(f"   → ❌ Could not decode file")
             return pd.DataFrame()
         
-        # Parse CSV
-        df = pd.read_csv(StringIO(text))
+        # Check for header rows and find actual data start
+        lines = text.split('\n')
+        debug_log(f"   → Total lines: {len(lines)}")
         
-        # Normalize column names
+        # Find the row with column headers (contains 'Code' or 'Name' or 'Category')
+        header_row = 0
+        for i, line in enumerate(lines[:20]):  # Check first 20 lines
+            if 'Code' in line and 'Name' in line and 'Category' in line:
+                header_row = i
+                debug_log(f"   → Found header at row {i}: {line[:80]}...")
+                break
+            elif 'Item code' in line or 'Item Code' in line:
+                header_row = i
+                debug_log(f"   → Found header at row {i}")
+                break
+        
+        debug_log(f"   → Skipping {header_row} rows before header")
+        
+        # Parse CSV with correct header row
+        df = pd.read_csv(StringIO(text), skiprows=header_row)
+        
+        debug_log(f"   → Parsed {len(df)} rows")
+        debug_log(f"   → Columns: {list(df.columns)}")
+        
+        # Normalize column names - expanded mapping
         column_mapping = {
+            # Code variations
+            'Code': 'code',
             'Item code': 'code',
             'Item Code': 'code',
             '商品コード': 'code',
+            
+            # Name variations
+            'Name': 'name',
             'Item name': 'name',
             'Item Name': 'name',
             '商品名': 'name',
+            
+            # Category variations
             'Category': 'category',
             'カテゴリ': 'category',
+            
+            # Qty variations
             'Qty': 'qty',
             'qty': 'qty',
+            'Quantity': 'qty',
             '数量': 'qty',
+            
+            # Price variations
             'Price': 'price',
             'price': 'price',
+            'Unit Price': 'price',
             '単価': 'price',
+            
+            # Net total variations
+            'Net Item Total': 'net_total',
             'Net Total': 'net_total',
             'Net total': 'net_total',
-            '売上合計': 'net_total'
+            '売上合計': 'net_total',
+            'Gross Item Total': 'gross_total',
         }
         
         df = df.rename(columns=column_mapping)
+        debug_log(f"   → After rename: {list(df.columns)}")
         
-        # Ensure required columns
+        # If no net_total but has gross_total, use that
+        if 'net_total' not in df.columns and 'gross_total' in df.columns:
+            df['net_total'] = df['gross_total']
+            debug_log(f"   → Using gross_total as net_total")
+        
+        # Ensure required columns exist
         required = ['code', 'name', 'qty']
         for col in required:
             if col not in df.columns:
-                similar = [c for c in df.columns if col.lower() in c.lower()]
-                if similar:
-                    df[col] = df[similar[0]]
+                # Try to find similar column
+                for orig_col in df.columns:
+                    if col.lower() in orig_col.lower():
+                        df[col] = df[orig_col]
+                        debug_log(f"   → Mapped '{orig_col}' to '{col}'")
+                        break
                 else:
                     df[col] = ''
+                    debug_log(f"   → ⚠️ Column '{col}' not found, using empty")
         
-        # Add missing columns
+        # Add missing optional columns
         if 'category' not in df.columns:
             df['category'] = 'Other'
         if 'price' not in df.columns:
             df['price'] = 0
         if 'net_total' not in df.columns:
-            df['net_total'] = df['qty'] * df['price']
+            df['net_total'] = 0
         
-        # Clean numeric columns
-        df['qty'] = pd.to_numeric(df['qty'], errors='coerce').fillna(0)
-        df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0)
-        df['net_total'] = pd.to_numeric(df['net_total'], errors='coerce').fillna(0)
+        # Clean data - remove Total rows and empty rows
+        initial_count = len(df)
         
-        # Select and return
+        # Remove rows where Code is empty or starts with "Total"
+        df = df[df['code'].notna() & (df['code'] != '')]
+        df = df[~df['code'].astype(str).str.contains('Total', case=False, na=False)]
+        
+        # Remove rows where Name contains "Total"
+        df = df[~df['name'].astype(str).str.contains('Total:', case=False, na=False)]
+        
+        debug_log(f"   → Removed {initial_count - len(df)} total/empty rows")
+        
+        # Clean numeric columns - handle comma-formatted numbers
+        for col in ['qty', 'price', 'net_total']:
+            if col in df.columns:
+                # Convert to string, remove commas, then to numeric
+                df[col] = df[col].astype(str).str.replace(',', '').str.replace('%', '')
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+        # Remove zero quantity rows
+        df = df[df['qty'] != 0]
+        
+        debug_log(f"   → After cleanup: {len(df)} rows")
+        
+        # Select final columns
         result_df = df[['code', 'name', 'category', 'qty', 'price', 'net_total']].copy()
-        result_df = result_df[result_df['qty'] != 0]  # Remove zero quantity
+        
+        debug_log(f"   → ✅ Final result: {len(result_df)} sales records")
+        
+        if len(result_df) > 0:
+            debug_log(f"   → Sample: {result_df.iloc[0].to_dict()}")
         
         return result_df
     
     except Exception as e:
-        print(f"Error extracting sales data: {e}")
+        import traceback
+        debug_log(f"   → ❌ Error: {str(e)}")
+        debug_log(f"   → Traceback: {traceback.format_exc()}")
         return pd.DataFrame()
 
 
