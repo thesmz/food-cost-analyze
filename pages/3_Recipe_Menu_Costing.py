@@ -15,7 +15,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import init_supabase, load_invoices, get_date_range
-from config import YIELD_RATES
+from config import YIELD_RATES, get_total_yield
 
 st.set_page_config(
     page_title="Recipe & Menu Costing | The Shinmonzen",
@@ -146,38 +146,39 @@ Return ONLY valid JSON: {{"original": "English"}}"""
 # =============================================================================
 def get_default_yield_for_ingredient(item_name: str, category: str) -> int:
     """
-    Get default yield percentage from YIELD_RATES based on ingredient name/category.
+    Get default TOTAL yield percentage from YIELD_RATES based on ingredient name/category.
+    TOTAL yield = butchery × cooking (raw → cooked)
     """
     item_lower = item_name.lower()
     
     # Check by specific ingredient patterns
     if any(x in item_lower for x in ['beef', 'tenderloin', 'wagyu', 'ヒレ', '牛']):
-        return int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
+        return int(get_total_yield('beef_tenderloin') * 100)
     elif any(x in item_lower for x in ['caviar', 'キャビア']):
-        return int(YIELD_RATES.get('caviar', 1.0) * 100)
-    elif any(x in item_lower for x in ['fish', 'fillet', '鮪', '鯛']):
-        return int(YIELD_RATES.get('fish_fillet', 0.90) * 100)
-    elif any(x in item_lower for x in ['whole fish', 'うに', '蛤']):
-        return int(YIELD_RATES.get('fish_whole', 0.45) * 100)
-    elif any(x in item_lower for x in ['shellfish', 'crab', 'lobster', '海老']):
-        return int(YIELD_RATES.get('shellfish', 0.40) * 100)
+        return int(get_total_yield('caviar') * 100)
+    elif any(x in item_lower for x in ['fillet', 'フィレ', '切身']):
+        return int(get_total_yield('fish_fillet') * 100)
+    elif any(x in item_lower for x in ['whole', '丸', 'うに', '蛤']):
+        return int(get_total_yield('fish_whole') * 100)
+    elif any(x in item_lower for x in ['shellfish', 'crab', 'lobster', '海老', '蟹']):
+        return int(get_total_yield('shellfish') * 100)
+    elif any(x in item_lower for x in ['fish', '魚', '鮪', '鯛', 'salmon', 'サーモン']):
+        return int(get_total_yield('fish_fillet') * 100)
     
     # Check by category
     if category == 'Meat':
-        return int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
+        return int(get_total_yield('beef_tenderloin') * 100)
     elif category == 'Seafood':
-        return int(YIELD_RATES.get('fish_fillet', 0.90) * 100)
+        return int(get_total_yield('fish_fillet') * 100)
     elif category == 'Produce':
-        return int(YIELD_RATES.get('vegetables', 0.85) * 100)
+        return int(get_total_yield('vegetables') * 100)
     elif category == 'Dairy':
-        return int(YIELD_RATES.get('caviar', 1.0) * 100)  # Dairy usually 100%
+        return int(get_total_yield('caviar') * 100)  # Dairy usually 100%
     
     # Default
-    return int(YIELD_RATES.get('default', 0.80) * 100)
+    return int(get_total_yield('default') * 100)
 
 
-# =============================================================================
-# LOAD PANTRY FROM INVOICES
 # =============================================================================
 # LOAD PANTRY FROM INVOICES
 # =============================================================================
@@ -430,52 +431,57 @@ with left_panel:
                 trans_col1, trans_col2 = st.columns(2)
                 with trans_col1:
                     transfer_qty = st.number_input(
-                        "Quantity (g/ml/pc)",
+                        "Usable/Cooked Amount (g)",
                         min_value=1,
                         value=st.session_state.transfer_qty,
                         step=10,
-                        key="transfer_qty_input"
+                        key="transfer_qty_input",
+                        help="Amount that goes on the plate (after trimming & cooking)"
                     )
                 with trans_col2:
                     transfer_yield = st.number_input(
-                        "Yield %",
+                        "Total Yield %",
                         min_value=1,
                         max_value=100,
                         value=default_yield,
                         step=5,
                         key="transfer_yield_input",
-                        help=f"Default {default_yield}% from config for this category"
+                        help=f"Raw → Cooked yield. {default_yield}% means 100g raw → {default_yield}g cooked"
                     )
                 
                 # Calculate cost preview
                 unit = item_info['unit']
                 cost_per_unit = item_info['cost_per_unit']
                 
-                # Convert based on unit
+                # Convert based on unit to get cost per gram of RAW product
                 if unit == 'kg':
-                    cost_per_gram = cost_per_unit / 1000
+                    raw_cost_per_gram = cost_per_unit / 1000
                 elif unit == '100g':
-                    cost_per_gram = cost_per_unit / 100
+                    raw_cost_per_gram = cost_per_unit / 100
                 elif unit == 'L':
-                    cost_per_gram = cost_per_unit / 1000
+                    raw_cost_per_gram = cost_per_unit / 1000
                 else:
-                    cost_per_gram = cost_per_unit  # pc, etc.
+                    raw_cost_per_gram = cost_per_unit  # pc, etc.
                 
-                raw_cost = transfer_qty * cost_per_gram
-                yield_adjusted_cost = raw_cost / (transfer_yield / 100)
+                # Calculate: usable_qty → raw_needed → cost
+                yield_decimal = transfer_yield / 100
+                raw_qty_needed = transfer_qty / yield_decimal if yield_decimal > 0 else transfer_qty
+                total_cost = raw_qty_needed * raw_cost_per_gram
                 
-                st.info(f"💰 Estimated cost: **¥{yield_adjusted_cost:,.0f}** (yield-adjusted)")
+                # Show breakdown
+                st.caption(f"📐 {transfer_qty}g cooked ÷ {transfer_yield}% yield = **{raw_qty_needed:.0f}g raw** needed")
+                st.info(f"💰 Cost: {raw_qty_needed:.0f}g × ¥{raw_cost_per_gram:.1f}/g = **¥{total_cost:,.0f}**")
                 
                 # TRANSFER BUTTON
                 if st.button("➡️ TRANSFER TO RECIPE", type="primary", use_container_width=True):
                     new_ingredient = {
                         'name': selected_item_name,
                         'original_name': original_name,
-                        'quantity': transfer_qty,
+                        'quantity': transfer_qty,  # Usable/cooked amount
+                        'raw_qty': raw_qty_needed,
                         'unit': 'g',
                         'yield_pct': transfer_yield,
-                        'cost': yield_adjusted_cost,
-                        'raw_cost': raw_cost
+                        'cost': total_cost,
                     }
                     st.session_state.current_ingredients.append(new_ingredient)
                     st.success(f"Added {selected_item_name}!")

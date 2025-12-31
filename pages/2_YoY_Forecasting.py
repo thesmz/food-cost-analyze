@@ -14,7 +14,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import FORECAST_CONFIG, YIELD_RATES
+from config import FORECAST_CONFIG, YIELD_RATES, get_total_yield, get_butchery_yield, get_cooking_yield
 from database import init_supabase, load_sales, get_date_range, get_data_summary
 
 st.set_page_config(page_title="YoY Forecasting | The Shinmonzen", page_icon="🔮", layout="wide")
@@ -124,43 +124,48 @@ ingredient = st.selectbox(
     index=0
 )
 
-# Determine default yield based on item name (check YIELD_RATES)
+# Determine default TOTAL yield based on item name
 def get_default_yield(item_name: str) -> int:
-    """Get default yield percentage from config based on item name"""
+    """
+    Get default TOTAL yield percentage from config based on item name.
+    TOTAL yield = butchery × cooking (raw → cooked)
+    """
     item_lower = item_name.lower()
     if 'beef' in item_lower or 'tenderloin' in item_lower or 'wagyu' in item_lower:
-        return int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
+        return int(get_total_yield('beef_tenderloin') * 100)
     elif 'caviar' in item_lower:
-        return int(YIELD_RATES.get('caviar', 1.0) * 100)
+        return int(get_total_yield('caviar') * 100)
     elif 'fish' in item_lower or 'amadai' in item_lower:
-        return int(YIELD_RATES.get('fish_whole', 0.45) * 100)
+        return int(get_total_yield('fish_whole') * 100)
+    elif 'fillet' in item_lower:
+        return int(get_total_yield('fish_fillet') * 100)
     elif 'vegetable' in item_lower or 'salad' in item_lower:
-        return int(YIELD_RATES.get('vegetables', 0.85) * 100)
+        return int(get_total_yield('vegetables') * 100)
     else:
-        return int(YIELD_RATES.get('default', 0.80) * 100)
+        return int(get_total_yield('default') * 100)
 
 default_yield = get_default_yield(ingredient)
 
-# Settings - unit is always grams (user inputs in grams)
+# Settings - unit is always grams (user inputs COOKED weight)
 unit = 'g'
 
 col_a, col_b = st.columns(2)
 with col_a:
     usage_per_serving = st.number_input(
-        "Usage per serving (g)", 
+        "Cooked portion per serving (g)", 
         min_value=1, max_value=1000, 
         value=100,
-        help="Estimated grams of ingredient per dish serving"
+        help="Grams of COOKED ingredient per serving (what goes on the plate)"
     )
 with col_b:
     yield_pct = st.slider(
-        "Yield %",
+        "Total Yield % (raw → cooked)",
         min_value=30, max_value=100,
         value=default_yield,
-        help=f"Processing yield (default {default_yield}% from config)"
+        help=f"Butchery × Cooking yield. Default {default_yield}%"
     ) / 100
 
-st.caption(f"**{ingredient}** - {usage_per_serving}g/serving, {yield_pct*100:.0f}% yield")
+st.caption(f"**{ingredient}** - {usage_per_serving}g cooked/serving @ {yield_pct*100:.0f}% yield → need {usage_per_serving/yield_pct:.0f}g raw/serving")
 
 st.divider()
 
