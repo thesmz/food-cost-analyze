@@ -5,6 +5,7 @@ This file contains helper functions used across the application.
 Data/configuration goes in config.py and vendors.py
 """
 
+import pandas as pd
 from vendors import VENDOR_NAME_MAP, ITEM_PATTERNS
 from config import INGREDIENT_PATTERNS
 
@@ -92,6 +93,7 @@ def normalize_unit(unit: str) -> str:
         'g': 'g',
         'pc': 'pc',
         'pcs': 'pc',
+        '100g': '100g',
     }
     
     return unit_map.get(unit, unit)
@@ -152,3 +154,106 @@ def detect_vendor_from_text(text: str, filename: str = '') -> str:
                 return vendor_name
     
     return None
+
+
+# =============================================================================
+# SALES CALCULATION HELPERS (DRY - Don't Repeat Yourself)
+# =============================================================================
+
+def calculate_revenue(df: pd.DataFrame, fallback_price: float = None) -> pd.DataFrame:
+    """
+    Calculate revenue for sales data. Uses net_total if available,
+    otherwise calculates from qty * price.
+    
+    Args:
+        df: DataFrame with columns: qty, price, net_total
+        fallback_price: Optional fallback price if price is 0/null
+    
+    Returns:
+        DataFrame with added 'calculated_revenue' column
+    """
+    df = df.copy()
+    
+    def calc_row_revenue(row):
+        # Use net_total if it's valid
+        if pd.notna(row.get('net_total')) and row.get('net_total', 0) != 0:
+            return float(row['net_total'])
+        
+        # Otherwise calculate from qty * price
+        qty = float(row.get('qty', 0) or 0)
+        price = float(row.get('price', 0) or 0)
+        
+        # Use fallback price if price is 0/null
+        if price == 0 and fallback_price:
+            price = fallback_price
+        
+        return qty * price
+    
+    df['calculated_revenue'] = df.apply(calc_row_revenue, axis=1)
+    return df
+
+
+def convert_quantity_to_grams(df: pd.DataFrame, default_unit_grams: float = 100) -> pd.DataFrame:
+    """
+    Convert invoice quantities to grams based on the ACTUAL unit column.
+    
+    IMPORTANT: This uses the 'unit' column from invoice data, NOT inference from quantity.
+    
+    Args:
+        df: DataFrame with columns: quantity, unit
+        default_unit_grams: Grams per unit for 'pc'/'can' types (default 100g for caviar cans)
+    
+    Returns:
+        DataFrame with added 'quantity_grams' column
+    """
+    df = df.copy()
+    
+    def convert_row(row):
+        qty = float(row.get('quantity', 0) or 0)
+        unit = normalize_unit(str(row.get('unit', 'pc')))
+        
+        if unit == 'kg':
+            return qty * 1000
+        elif unit == 'g':
+            return qty
+        elif unit == '100g':
+            return qty * 100
+        elif unit in ['pc', 'can', 'box', 'pack']:
+            # Use the default grams per unit (e.g., 100g per caviar can)
+            return qty * default_unit_grams
+        else:
+            # Unknown unit - assume it's already in the target unit
+            return qty
+    
+    df['quantity_grams'] = df.apply(convert_row, axis=1)
+    return df
+
+
+def convert_quantity_to_kg(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert invoice quantities to kg based on the ACTUAL unit column.
+    
+    Args:
+        df: DataFrame with columns: quantity, unit
+    
+    Returns:
+        DataFrame with added 'quantity_kg' column
+    """
+    df = df.copy()
+    
+    def convert_row(row):
+        qty = float(row.get('quantity', 0) or 0)
+        unit = normalize_unit(str(row.get('unit', 'kg')))
+        
+        if unit == 'kg':
+            return qty
+        elif unit == 'g':
+            return qty / 1000
+        elif unit == '100g':
+            return qty / 10
+        else:
+            # Assume kg for unknown units
+            return qty
+    
+    df['quantity_kg'] = df.apply(convert_row, axis=1)
+    return df
