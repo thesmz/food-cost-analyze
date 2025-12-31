@@ -14,7 +14,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import DISH_INGREDIENT_MAP, FORECAST_CONFIG
+from config import FORECAST_CONFIG, YIELD_RATES
 from database import init_supabase, load_sales, get_date_range, get_data_summary
 
 st.set_page_config(page_title="YoY Forecasting | The Shinmonzen", page_icon="🔮", layout="wide")
@@ -52,12 +52,6 @@ with st.sidebar:
         st.stop()
     
     st.divider()
-    
-    beef_per_serving = st.number_input("Beef per serving (g)", min_value=50, max_value=500, value=150)
-    beef_yield_pct = st.slider("Beef Yield (%)", min_value=50, max_value=100, value=65) / 100
-    
-    caviar_per_serving = st.number_input("Caviar per serving (g)", min_value=5, max_value=50, value=10)
-    caviar_yield_pct = st.slider("Caviar Yield (%)", min_value=80, max_value=100, value=100) / 100
     
     safety_stock_pct = st.slider("Safety Stock (%)", min_value=0, max_value=30, value=10) / 100
 
@@ -115,36 +109,44 @@ st.markdown(f"### 🎯 Forecasting for: **{target_month_name}**")
 
 st.divider()
 
-# Ingredient selection
+# Get unique items from sales data for selection
+unique_items = sales_df['name'].dropna().unique().tolist()
+unique_items = sorted([item for item in unique_items if len(str(item)) > 2])
+
+if not unique_items:
+    st.warning("No items found in sales data")
+    st.stop()
+
+# Ingredient selection - from actual sales data
 ingredient = st.selectbox(
-    "Select Ingredient / 食材を選択",
-    options=list(DISH_INGREDIENT_MAP.keys()),
+    "Select Item / 品目を選択",
+    options=unique_items,
     index=0
 )
 
-config = DISH_INGREDIENT_MAP[ingredient]
+# Settings
+col_a, col_b = st.columns(2)
+with col_a:
+    usage_per_serving = st.number_input(
+        "Usage per serving (g)", 
+        min_value=1, max_value=1000, 
+        value=100,
+        help="Estimated grams per serving"
+    )
+with col_b:
+    yield_pct = st.slider(
+        "Yield %",
+        min_value=30, max_value=100,
+        value=80,
+        help="Processing yield percentage"
+    ) / 100
 
-# Override settings for beef/caviar
-if ingredient == 'Beef Tenderloin':
-    usage_per_serving = beef_per_serving
-    yield_pct = beef_yield_pct
-    unit = 'g'
-elif ingredient == 'Egg Toast Caviar':
-    usage_per_serving = caviar_per_serving
-    yield_pct = caviar_yield_pct
-    unit = 'g'
-else:
-    usage_per_serving = config['usage_per_serving']
-    yield_pct = config['yield_percent']
-    unit = config['unit']
-
-st.caption(f"**{ingredient}** - {usage_per_serving}{unit}/serving, {yield_pct*100:.0f}% yield")
+st.caption(f"**{ingredient}** - {usage_per_serving}g/serving, {yield_pct*100:.0f}% yield")
 
 st.divider()
 
 # Filter sales for this ingredient
-ingredient_pattern = '|'.join(config.get('patterns', [ingredient]))
-ingredient_sales = sales_df[sales_df['name'].str.contains(ingredient_pattern, case=False, na=False)]
+ingredient_sales = sales_df[sales_df['name'] == ingredient]
 
 if ingredient_sales.empty:
     st.markdown(f"""

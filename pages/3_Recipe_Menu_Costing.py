@@ -146,9 +146,9 @@ Return ONLY valid JSON: {{"original": "English"}}"""
 @st.cache_data(ttl=300)
 def load_pantry_from_invoices():
     """Load ingredient prices from invoice data"""
-    # Import vendor name mapper
+    # Import vendor name mapper from utils
     try:
-        from config import get_clean_vendor_name
+        from utils import get_clean_vendor_name
     except ImportError:
         def get_clean_vendor_name(name):
             return name
