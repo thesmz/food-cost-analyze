@@ -68,13 +68,49 @@ VENDOR_NAME_MAP = {
 # =============================================================================
 # VENDOR DETECTION PATTERNS
 # Patterns used to identify vendors from invoice text/filenames
+# Add new vendors here instead of in extractors.py
 # =============================================================================
 VENDOR_PATTERNS = {
-    'Meat Shop Hirayama': ['ミートショップひら山', 'ひら山', 'hirayama'],
-    'Maruyata': ['丸弥太', 'maruyata'],
-    'French F&B Japan': ['フレンチ・エフ・アンド・ビー', 'french f&b', 'french fnb'],
-    'Asami Suisan': ['浅見水産', 'asami'],
-    'Gibier Imai': ['洛北ジビエ', 'イマイ', 'gibier'],
+    'Meat Shop Hirayama': {
+        'patterns': ['ミートショップひら山', 'ひら山', 'hirayama'],
+        'extractor': 'hirayama',  # Which regex extractor to use
+    },
+    'Maruyata': {
+        'patterns': ['丸弥太', 'maruyata'],
+        'extractor': 'maruyata',
+    },
+    'French F&B Japan': {
+        'patterns': ['フレンチ・エフ・アンド・ビー', 'french f&b', 'french fnb', 'french_fnb'],
+        'extractor': 'french_fnb',
+    },
+    'Asami Suisan': {
+        'patterns': ['浅見水産', 'asami'],
+        'extractor': 'ai',  # Use AI extraction
+    },
+    'Gibier Imai': {
+        'patterns': ['洛北ジビエ', 'イマイ', 'gibier', 'imai'],
+        'extractor': 'ai',
+    },
+    'Cheese Kobo': {
+        'patterns': ['新利根チーズ', 'cheese kobo'],
+        'extractor': 'ai',
+    },
+    'Takanashi': {
+        'patterns': ['タカナシ', 'takanashi'],
+        'extractor': 'ai',
+    },
+    'Pomona Farm': {
+        'patterns': ['ポモナ', 'pomona'],
+        'extractor': 'ai',
+    },
+    'Minato': {
+        'patterns': ['ミナト', 'minato'],
+        'extractor': 'ai',
+    },
+    'Ginkakuji Onishi': {
+        'patterns': ['銀閣寺大西', 'ginkakuji', 'onishi'],
+        'extractor': 'ai',
+    },
 }
 
 # =============================================================================

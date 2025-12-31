@@ -5,10 +5,49 @@ This file contains ONLY static configuration that rarely changes:
 - Analysis thresholds
 - Category definitions
 - Seasonality factors
+- AI extraction settings
 
 NO PRICES HERE - prices come from database (invoices/sales tables)
 NO FUNCTIONS HERE - functions go in utils.py
 """
+
+# =============================================================================
+# AI EXTRACTION CONFIGURATION
+# =============================================================================
+AI_CONFIG = {
+    'model': 'claude-sonnet-4-20250514',
+    'max_tokens': 8000,
+    'temperature': 0,
+}
+
+# AI prompt for invoice extraction - edit here instead of in code
+AI_INVOICE_PROMPT = """You are an expert at extracting data from Japanese invoices.
+
+Extract ALL line items from this invoice image. Return ONLY valid JSON, no markdown.
+
+Required JSON structure:
+{
+  "vendor_name": "vendor name from invoice header",
+  "invoice_date": "YYYY-MM-DD",
+  "items": [
+    {
+      "date": "YYYY-MM-DD",
+      "item_name": "product name in original language",
+      "quantity": 1.0,
+      "unit": "kg or pc or g or 100g",
+      "unit_price": 1000,
+      "amount": 1000
+    }
+  ]
+}
+
+Rules:
+- Extract EVERY line item, not just the first few
+- Keep item names in original Japanese
+- Use numeric values (no commas or yen symbols)
+- If unit is unclear, use "pc"
+- If date is missing on line, use invoice header date
+- Return ONLY the JSON object, nothing else"""
 
 # =============================================================================
 # ANALYSIS THRESHOLDS

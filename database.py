@@ -8,8 +8,17 @@ from supabase import create_client, Client
 import pandas as pd
 import re
 from datetime import datetime, date
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
+import logging
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# CONNECTION
+# =============================================================================
 
 def init_supabase() -> Optional[Client]:
     """Initialize Supabase client from Streamlit secrets"""
@@ -22,192 +31,226 @@ def init_supabase() -> Optional[Client]:
         return None
 
 
-def save_invoices(supabase: Client, records) -> int:
+# =============================================================================
+# HELPER FUNCTIONS (DRY - Don't Repeat Yourself)
+# =============================================================================
+
+def parse_date(date_value: Any, formats: List[str] = None) -> Optional[str]:
     """
-    Save invoice records to Supabase
-    Accepts either a list of dicts or a DataFrame
-    Returns number of records saved
+    Parse various date formats into ISO format (YYYY-MM-DD).
+    
+    Args:
+        date_value: Date string, datetime, or date object
+        formats: List of strptime formats to try
+    
+    Returns:
+        ISO formatted date string or None if parsing fails
     """
-    print(f"[DB] save_invoices called with {type(records)}")
+    if formats is None:
+        formats = ['%Y-%m-%d', '%Y/%m/%d', '%d/%m/%Y', '%Y-%m']
     
-    if not supabase:
-        print("[DB] No supabase client")
-        return 0
+    if date_value is None or (isinstance(date_value, float) and pd.isna(date_value)):
+        return None
     
-    # Handle DataFrame input
-    if isinstance(records, pd.DataFrame):
-        print(f"[DB] DataFrame with {len(records)} rows")
-        if records.empty:
-            print("[DB] DataFrame is empty")
-            return 0
-        records = records.to_dict('records')
-        print(f"[DB] Converted to {len(records)} records")
+    # Already a date object
+    if isinstance(date_value, date):
+        return date_value.isoformat()
     
-    # Handle list input
-    if not isinstance(records, list) or len(records) == 0:
-        print(f"[DB] Invalid records: {type(records)}, len={len(records) if isinstance(records, list) else 'N/A'}")
-        return 0
+    # Datetime object
+    if isinstance(date_value, datetime):
+        return date_value.date().isoformat()
     
-    print(f"[DB] Processing {len(records)} records")
+    # String parsing
+    date_str = str(date_value).strip()
+    if not date_str:
+        return None
     
-    saved_count = 0
-    batch_data = []
-    skipped = 0
+    # Handle YYYY-MM format (add day)
+    if re.match(r'^\d{4}-\d{2}$', date_str):
+        date_str = f"{date_str}-01"
     
-    for i, record in enumerate(records):
+    # Try each format
+    for fmt in formats:
         try:
-            # Convert date string to proper format
-            invoice_date = record.get('date', '')
-            if isinstance(invoice_date, str):
-                # Handle various date formats
-                for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%d/%m/%Y']:
-                    try:
-                        invoice_date = datetime.strptime(invoice_date, fmt).date().isoformat()
-                        break
-                    except ValueError:
-                        continue
-            
-            # Skip if no valid date
-            if not invoice_date:
-                skipped += 1
-                if skipped <= 3:
-                    print(f"[DB] Skipping record {i}: no valid date - {record.get('date', 'N/A')}")
-                continue
-            
-            data = {
-                'vendor': record.get('vendor', ''),
-                'invoice_date': invoice_date,
-                'item_name': record.get('item_name', ''),
-                'quantity': float(record.get('quantity', 0)),
-                'unit': record.get('unit', ''),
-                'unit_price': float(record.get('unit_price', 0)),
-                'amount': float(record.get('amount', 0))
-            }
-            
-            batch_data.append(data)
-                
-        except Exception as e:
-            print(f"[DB] Error processing record {i}: {e}")
+            return datetime.strptime(date_str, fmt).date().isoformat()
+        except ValueError:
             continue
     
-    print(f"[DB] Batch data prepared: {len(batch_data)} records, {skipped} skipped")
+    return None
+
+
+def batch_upsert(
+    supabase: Client,
+    table: str,
+    records: List[Dict],
+    conflict_columns: str = None,
+    chunk_size: int = 50
+) -> int:
+    """
+    Generic batch upsert/insert for any table.
     
-    if batch_data:
-        if len(batch_data) > 0:
-            print(f"[DB] Sample record: {batch_data[0]}")
+    Args:
+        supabase: Supabase client
+        table: Table name
+        records: List of record dicts
+        conflict_columns: Comma-separated columns for upsert (or None for insert)
+        chunk_size: Records per batch
     
-    # Batch insert (much faster than one-by-one)
-    if batch_data:
-        try:
-            # Insert in chunks of 50 to avoid timeout
-            chunk_size = 50
-            for i in range(0, len(batch_data), chunk_size):
-                chunk = batch_data[i:i + chunk_size]
-                print(f"[DB] Upserting chunk {i//chunk_size + 1}: {len(chunk)} records")
-                result = supabase.table('invoices').upsert(
+    Returns:
+        Number of records saved
+    """
+    if not records:
+        return 0
+    
+    saved_count = 0
+    
+    try:
+        for i in range(0, len(records), chunk_size):
+            chunk = records[i:i + chunk_size]
+            
+            if conflict_columns:
+                # Upsert (update on conflict)
+                supabase.table(table).upsert(
                     chunk,
-                    on_conflict='vendor,invoice_date,item_name,amount'
+                    on_conflict=conflict_columns
                 ).execute()
-                saved_count += len(chunk)
-                print(f"[DB] Chunk saved, total so far: {saved_count}")
-        except Exception as e:
-            print(f"[DB] Upsert error: {e}")
-            # If upsert fails (no unique constraint), try simple insert
+            else:
+                # Simple insert
+                supabase.table(table).insert(chunk).execute()
+            
+            saved_count += len(chunk)
+            
+    except Exception as e:
+        logger.warning(f"Batch operation failed: {e}, trying individual inserts")
+        
+        # Fallback to individual inserts
+        for record in records[saved_count:]:
             try:
-                print("[DB] Trying individual inserts...")
-                for j, data in enumerate(batch_data):
-                    try:
-                        supabase.table('invoices').insert(data).execute()
-                        saved_count += 1
-                    except Exception as e3:
-                        if j < 3:
-                            print(f"[DB] Insert error for record {j}: {e3}")
-                print(f"[DB] Individual inserts complete: {saved_count} saved")
+                supabase.table(table).insert(record).execute()
+                saved_count += 1
             except Exception as e2:
-                print(f"[DB] Batch insert error: {e2}")
-                st.warning(f"Error batch saving invoices: {e2}")
+                logger.debug(f"Individual insert failed: {e2}")
+                continue
     
-    print(f"[DB] Final saved count: {saved_count}")
     return saved_count
+
+
+def to_float(value: Any, default: float = 0.0) -> float:
+    """Safely convert value to float"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+# =============================================================================
+# SAVE FUNCTIONS
+# =============================================================================
+
+def save_invoices(supabase: Client, records: Union[pd.DataFrame, List[Dict]]) -> int:
+    """
+    Save invoice records to Supabase.
+    
+    Args:
+        supabase: Supabase client
+        records: DataFrame or list of dicts with invoice data
+    
+    Returns:
+        Number of records saved
+    """
+    if not supabase:
+        return 0
+    
+    # Convert DataFrame to list of dicts
+    if isinstance(records, pd.DataFrame):
+        if records.empty:
+            return 0
+        records = records.to_dict('records')
+    
+    if not records:
+        return 0
+    
+    # Transform to database schema
+    batch_data = []
+    for record in records:
+        invoice_date = parse_date(record.get('date'))
+        if not invoice_date:
+            continue
+        
+        batch_data.append({
+            'vendor': str(record.get('vendor', '')),
+            'invoice_date': invoice_date,
+            'item_name': str(record.get('item_name', '')),
+            'quantity': to_float(record.get('quantity')),
+            'unit': str(record.get('unit', '')),
+            'unit_price': to_float(record.get('unit_price')),
+            'amount': to_float(record.get('amount'))
+        })
+    
+    logger.info(f"Saving {len(batch_data)} invoice records")
+    
+    return batch_upsert(
+        supabase,
+        table='invoices',
+        records=batch_data,
+        conflict_columns='vendor,invoice_date,item_name,amount'
+    )
 
 
 def save_sales(supabase: Client, df: pd.DataFrame) -> int:
     """
-    Save sales records to Supabase
-    Expects columns: sale_date, code, item_name, category, qty, price, net_total
-    Returns number of records saved
+    Save sales records to Supabase.
+    
+    Args:
+        supabase: Supabase client
+        df: DataFrame with sales data
+    
+    Returns:
+        Number of records saved
     """
     if not supabase or df.empty:
         return 0
     
-    saved_count = 0
+    # Transform to database schema
     batch_data = []
-    
     for _, row in df.iterrows():
-        try:
-            # Get sale_date
-            sale_date = row.get('sale_date', '')
-            if not sale_date or pd.isna(sale_date):
-                continue
-            
-            sale_date = str(sale_date).strip()
-            
-            # Handle YYYY-MM format
-            if re.match(r'^\d{4}-\d{2}$', sale_date):
-                sale_date = f"{sale_date}-01"
-            
-            # Validate date
-            try:
-                parsed_date = datetime.strptime(sale_date, '%Y-%m-%d')
-                sale_date = parsed_date.date().isoformat()
-            except ValueError:
-                continue
-            
-            data = {
-                'sale_date': sale_date,
-                'code': str(row.get('code', '')),
-                'item_name': str(row.get('item_name', '')),
-                'category': str(row.get('category', '')),
-                'qty': float(row.get('qty', 0)) if pd.notna(row.get('qty')) else 0,
-                'price': float(row.get('price', 0)) if pd.notna(row.get('price')) else 0,
-                'net_total': float(row.get('net_total', 0)) if pd.notna(row.get('net_total')) else 0
-            }
-            
-            batch_data.append(data)
-                
-        except Exception as e:
+        sale_date = parse_date(row.get('sale_date'))
+        if not sale_date:
             continue
+        
+        batch_data.append({
+            'sale_date': sale_date,
+            'code': str(row.get('code', '')),
+            'item_name': str(row.get('item_name', '')),
+            'category': str(row.get('category', '')),
+            'qty': to_float(row.get('qty')),
+            'price': to_float(row.get('price')),
+            'net_total': to_float(row.get('net_total'))
+        })
     
-    # Batch insert (much faster than one-by-one)
-    if batch_data:
-        try:
-            # Insert in chunks of 100 to avoid timeout
-            chunk_size = 100
-            for i in range(0, len(batch_data), chunk_size):
-                chunk = batch_data[i:i + chunk_size]
-                try:
-                    result = supabase.table('sales').insert(chunk).execute()
-                    saved_count += len(chunk)
-                except Exception as chunk_error:
-                    # If batch fails, try one by one
-                    for record in chunk:
-                        try:
-                            supabase.table('sales').insert(record).execute()
-                            saved_count += 1
-                        except:
-                            pass  # Skip duplicates or errors
-        except Exception as e:
-            st.warning(f"Error batch saving sales: {e}")
+    logger.info(f"Saving {len(batch_data)} sales records")
     
-    return saved_count
+    return batch_upsert(
+        supabase,
+        table='sales',
+        records=batch_data,
+        conflict_columns=None  # No upsert for sales, just insert
+    )
 
 
-def load_invoices(supabase: Client, start_date: Optional[date] = None, 
-                  end_date: Optional[date] = None, vendor: Optional[str] = None) -> pd.DataFrame:
-    """
-    Load invoices from Supabase with optional filters
-    Uses pagination to get ALL rows
-    """
+# =============================================================================
+# LOAD FUNCTIONS
+# =============================================================================
+
+def load_invoices(
+    supabase: Client,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    vendor_filter: Optional[str] = None
+) -> pd.DataFrame:
+    """Load invoices from Supabase with optional filters"""
     if not supabase:
         return pd.DataFrame()
     
@@ -223,10 +266,9 @@ def load_invoices(supabase: Client, start_date: Optional[date] = None,
                 query = query.gte('invoice_date', start_date.isoformat())
             if end_date:
                 query = query.lte('invoice_date', end_date.isoformat())
-            if vendor:
-                query = query.ilike('vendor', f'%{vendor}%')
+            if vendor_filter:
+                query = query.ilike('vendor', f'%{vendor_filter}%')
             
-            # Paginate with range
             result = query.order('id').range(offset, offset + page_size - 1).execute()
             
             if result.data:
@@ -239,12 +281,9 @@ def load_invoices(supabase: Client, start_date: Optional[date] = None,
         
         if all_data:
             df = pd.DataFrame(all_data)
-            # Rename columns to match expected format
-            df = df.rename(columns={
-                'invoice_date': 'date',
-                'item_name': 'item_name'
-            })
+            df = df.rename(columns={'invoice_date': 'date'})
             return df
+        
         return pd.DataFrame()
         
     except Exception as e:
@@ -252,12 +291,13 @@ def load_invoices(supabase: Client, start_date: Optional[date] = None,
         return pd.DataFrame()
 
 
-def load_sales(supabase: Client, start_date: Optional[date] = None,
-               end_date: Optional[date] = None, item_filter: Optional[str] = None) -> pd.DataFrame:
-    """
-    Load sales from Supabase with optional filters
-    Uses pagination to get ALL rows (Supabase default limit is 1000)
-    """
+def load_sales(
+    supabase: Client,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    item_filter: Optional[str] = None
+) -> pd.DataFrame:
+    """Load sales from Supabase with optional filters"""
     if not supabase:
         return pd.DataFrame()
     
@@ -276,13 +316,11 @@ def load_sales(supabase: Client, start_date: Optional[date] = None,
             if item_filter:
                 query = query.ilike('item_name', f'%{item_filter}%')
             
-            # Paginate with range
             result = query.order('id').range(offset, offset + page_size - 1).execute()
             
             if result.data:
                 all_data.extend(result.data)
                 if len(result.data) < page_size:
-                    # Last page
                     break
                 offset += page_size
             else:
@@ -290,12 +328,9 @@ def load_sales(supabase: Client, start_date: Optional[date] = None,
         
         if all_data:
             df = pd.DataFrame(all_data)
-            # Rename columns to match expected format
-            df = df.rename(columns={
-                'sale_date': 'date',
-                'item_name': 'name'
-            })
+            df = df.rename(columns={'sale_date': 'date', 'item_name': 'name'})
             return df
+        
         return pd.DataFrame()
         
     except Exception as e:
@@ -303,32 +338,41 @@ def load_sales(supabase: Client, start_date: Optional[date] = None,
         return pd.DataFrame()
 
 
+# =============================================================================
+# QUERY FUNCTIONS
+# =============================================================================
+
 def get_date_range(supabase: Client) -> tuple:
-    """
-    Get the min and max dates from both invoices and sales
-    Returns (min_date, max_date)
-    """
+    """Get min and max dates from both invoices and sales"""
     if not supabase:
         return None, None
     
     try:
-        # Get invoice date range
-        inv_min = supabase.table('invoices').select('invoice_date').order('invoice_date', desc=False).limit(1).execute()
-        inv_max = supabase.table('invoices').select('invoice_date').order('invoice_date', desc=True).limit(1).execute()
-        
-        # Get sales date range
-        sales_min = supabase.table('sales').select('sale_date').order('sale_date', desc=False).limit(1).execute()
-        sales_max = supabase.table('sales').select('sale_date').order('sale_date', desc=True).limit(1).execute()
-        
         dates = []
-        for result in [inv_min, inv_max, sales_min, sales_max]:
+        
+        # Invoice dates
+        for order in [False, True]:  # min, max
+            result = supabase.table('invoices').select('invoice_date').order(
+                'invoice_date', desc=order
+            ).limit(1).execute()
             if result.data:
-                date_val = result.data[0].get('invoice_date') or result.data[0].get('sale_date')
+                date_val = result.data[0].get('invoice_date')
+                if date_val:
+                    dates.append(datetime.fromisoformat(date_val).date())
+        
+        # Sales dates
+        for order in [False, True]:
+            result = supabase.table('sales').select('sale_date').order(
+                'sale_date', desc=order
+            ).limit(1).execute()
+            if result.data:
+                date_val = result.data[0].get('sale_date')
                 if date_val:
                     dates.append(datetime.fromisoformat(date_val).date())
         
         if dates:
             return min(dates), max(dates)
+        
         return None, None
         
     except Exception as e:
@@ -336,68 +380,66 @@ def get_date_range(supabase: Client) -> tuple:
         return None, None
 
 
-def get_data_summary(supabase: Client) -> Dict[str, Any]:
-    """
-    Get summary statistics of stored data
-    """
+def get_data_summary(supabase: Client) -> Dict:
+    """Get summary statistics of stored data"""
     if not supabase:
         return {}
     
+    summary = {}
+    
     try:
-        # Count invoices
-        inv_count = supabase.table('invoices').select('id', count='exact').execute()
+        # Invoice count
+        result = supabase.table('invoices').select('id', count='exact').execute()
+        summary['invoice_count'] = result.count if result.count else 0
         
-        # Count sales
-        sales_count = supabase.table('sales').select('id', count='exact').execute()
+        # Sales count
+        result = supabase.table('sales').select('id', count='exact').execute()
+        summary['sales_count'] = result.count if result.count else 0
         
-        # Get date range
+        # Date range
         min_date, max_date = get_date_range(supabase)
-        
-        # Get beef tenderloin total (for debugging)
-        beef_result = supabase.table('sales').select('qty').ilike('item_name', '%Beef Tenderloin%').execute()
-        beef_total = sum(float(r['qty']) for r in beef_result.data) if beef_result.data else 0
-        
-        return {
-            'invoice_count': inv_count.count if inv_count else 0,
-            'sales_count': sales_count.count if sales_count else 0,
-            'min_date': min_date,
-            'max_date': max_date,
-            'beef_total_in_db': beef_total
-        }
+        summary['min_date'] = min_date.isoformat() if min_date else None
+        summary['max_date'] = max_date.isoformat() if max_date else None
         
     except Exception as e:
-        st.error(f"Error getting summary: {e}")
-        return {}
-
-
-def delete_data_by_date_range(supabase: Client, start_date: date, end_date: date, 
-                               table: str = 'both') -> Dict[str, int]:
-    """
-    Delete data within a date range
-    table: 'invoices', 'sales', or 'both'
-    Returns count of deleted records
-    """
-    if not supabase:
-        return {'invoices': 0, 'sales': 0}
+        logger.error(f"Error getting summary: {e}")
     
-    deleted = {'invoices': 0, 'sales': 0}
+    return summary
+
+
+# =============================================================================
+# DELETE FUNCTIONS
+# =============================================================================
+
+def delete_data_by_date_range(
+    supabase: Client,
+    start_date: date,
+    end_date: date,
+    tables: List[str] = None
+) -> Dict[str, int]:
+    """Delete data within date range from specified tables"""
+    if not supabase:
+        return {}
+    
+    if tables is None:
+        tables = ['invoices', 'sales']
+    
+    deleted = {}
+    date_columns = {'invoices': 'invoice_date', 'sales': 'sale_date'}
     
     try:
-        if table in ['invoices', 'both']:
-            result = supabase.table('invoices').delete().gte(
-                'invoice_date', start_date.isoformat()
+        for table in tables:
+            date_col = date_columns.get(table)
+            if not date_col:
+                continue
+            
+            result = supabase.table(table).delete().gte(
+                date_col, start_date.isoformat()
             ).lte(
-                'invoice_date', end_date.isoformat()
+                date_col, end_date.isoformat()
             ).execute()
-            deleted['invoices'] = len(result.data) if result.data else 0
-        
-        if table in ['sales', 'both']:
-            result = supabase.table('sales').delete().gte(
-                'sale_date', start_date.isoformat()
-            ).lte(
-                'sale_date', end_date.isoformat()
-            ).execute()
-            deleted['sales'] = len(result.data) if result.data else 0
+            
+            deleted[table] = len(result.data) if result.data else 0
             
     except Exception as e:
         st.error(f"Error deleting data: {e}")
@@ -405,7 +447,7 @@ def delete_data_by_date_range(supabase: Client, start_date: date, end_date: date
     return deleted
 
 
-def get_unique_vendors(supabase: Client) -> list:
+def get_unique_vendors(supabase: Client) -> List[str]:
     """Get list of unique vendors from invoices table"""
     if not supabase:
         return []
@@ -416,53 +458,31 @@ def get_unique_vendors(supabase: Client) -> list:
             vendors = set(row['vendor'] for row in result.data if row.get('vendor'))
             return sorted(list(vendors))
     except Exception as e:
-        print(f"Error getting vendors: {e}")
+        logger.error(f"Error getting vendors: {e}")
     
     return []
 
 
-def get_invoice_count_by_vendor(supabase: Client, vendor: str) -> int:
-    """Get count of invoices for a specific vendor"""
-    if not supabase:
-        return 0
-    
-    try:
-        result = supabase.table('invoices').select('id', count='exact').eq('vendor', vendor).execute()
-        return result.count if result.count else 0
-    except Exception as e:
-        print(f"Error counting invoices: {e}")
-        return 0
-
-
 def delete_invoices_by_vendor(supabase: Client, vendor: str) -> int:
-    """Delete all invoices from a specific vendor. Returns count deleted."""
+    """Delete all invoices from a specific vendor"""
     if not supabase:
         return 0
     
     try:
-        # First get count
+        # Get count first
         count_result = supabase.table('invoices').select('id', count='exact').eq('vendor', vendor).execute()
         count = count_result.count if count_result.count else 0
         
         if count == 0:
             return 0
         
-        # Delete records
-        result = supabase.table('invoices').delete().eq('vendor', vendor).execute()
+        # Delete
+        supabase.table('invoices').delete().eq('vendor', vendor).execute()
+        logger.info(f"Deleted {count} invoices from vendor: {vendor}")
         
-        print(f"[DB] Deleted {count} invoices from vendor: {vendor}")
         return count
         
     except Exception as e:
-        print(f"[DB] Error deleting invoices: {e}")
+        logger.error(f"Error deleting invoices: {e}")
         st.error(f"Error deleting invoices: {e}")
         return 0
-
-
-def delete_invoices_by_vendors(supabase: Client, vendors: list) -> dict:
-    """Delete invoices from multiple vendors. Returns dict of vendor: count deleted."""
-    results = {}
-    for vendor in vendors:
-        count = delete_invoices_by_vendor(supabase, vendor)
-        results[vendor] = count
-    return results

@@ -76,7 +76,16 @@ def extract_invoice_with_ai(pdf_path: str, filename: str = "") -> list:
     """
     Use Claude Vision API to extract invoice data from PDF images.
     Works with any vendor format, including scanned invoices.
+    
+    Uses AI_CONFIG and AI_INVOICE_PROMPT from config.py
     """
+    # Import AI config from config.py
+    try:
+        from config import AI_CONFIG, AI_INVOICE_PROMPT
+    except ImportError:
+        AI_CONFIG = {'model': 'claude-sonnet-4-20250514', 'max_tokens': 8000}
+        AI_INVOICE_PROMPT = "Extract invoice data as JSON"
+    
     debug_log(f"🤖 AI Extraction starting for: {filename}")
     
     api_key = get_anthropic_api_key()
@@ -121,42 +130,12 @@ def extract_invoice_with_ai(pdf_path: str, filename: str = "") -> list:
                 }
             })
         
-        # Build the prompt
-        prompt_text = """You are an expert at reading Japanese invoices. Extract ALL line items from this invoice image(s).
-
-Return ONLY valid JSON in this exact format (no markdown, no explanation):
-{
-  "vendor_name": "Vendor name in Japanese and English if visible",
-  "invoice_date": "YYYY-MM-DD",
-  "items": [
-    {
-      "date": "YYYY-MM-DD",
-      "item_name": "Product name exactly as written",
-      "quantity": 1.0,
-      "unit": "kg or 丁 or 本 or pc etc",
-      "unit_price": 1000,
-      "amount": 1000
-    }
-  ]
-}
-
-IMPORTANT RULES:
-1. Extract EVERY line item, not just totals
-2. For dates in format YY/MM/DD (like 25/10/01), convert to 2025-10-01
-3. Keep Japanese product names as-is (うに, 鮪, 天然鯛, etc.)
-4. Skip subtotal rows (伝票合計, ※※, etc.)
-5. If quantity has decimals (like 0.200 or 6.30), keep them
-6. Unit price × quantity should approximately equal amount
-7. Common units: kg, 丁 (for sea urchin), 本, 個, g, 缶
-
-Extract all items now:"""
-
-        # Build message content
-        message_content = image_contents + [{"type": "text", "text": prompt_text}]
+        # Build message content with prompt from config
+        message_content = image_contents + [{"type": "text", "text": AI_INVOICE_PROMPT}]
         
-        debug_log(f"   → Calling Claude API...")
+        debug_log(f"   → Calling Claude API (model: {AI_CONFIG['model']})...")
         
-        # Call Claude API
+        # Call Claude API with settings from config
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -165,8 +144,8 @@ Extract all items now:"""
                 "anthropic-version": "2023-06-01"
             },
             json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 8000,  # Increased to handle large invoices
+                "model": AI_CONFIG['model'],
+                "max_tokens": AI_CONFIG['max_tokens'],
                 "messages": [{"role": "user", "content": message_content}]
             },
             timeout=120
@@ -306,22 +285,73 @@ Extract all items now:"""
 
 
 # =============================================================================
-# DEBUG LOGGING (visible in Streamlit)
+# DEBUG LOGGING (using session_state for thread safety)
 # =============================================================================
-_debug_log = []
+def _get_debug_log_key():
+    """Get the session state key for debug log"""
+    return '_extractor_debug_log'
 
 def debug_log(msg):
-    """Add message to debug log"""
-    global _debug_log
-    _debug_log.append(msg)
-    print(msg)  # Also print to console
+    """Add message to debug log (thread-safe via session_state)"""
+    key = _get_debug_log_key()
+    if key not in st.session_state:
+        st.session_state[key] = []
+    st.session_state[key].append(msg)
+    print(msg)  # Also print to console for debugging
 
 def get_debug_log():
     """Get and clear debug log"""
-    global _debug_log
-    log = _debug_log.copy()
-    _debug_log = []
+    key = _get_debug_log_key()
+    if key not in st.session_state:
+        return []
+    log = st.session_state[key].copy()
+    st.session_state[key] = []
     return log
+
+def clear_debug_log():
+    """Clear the debug log"""
+    key = _get_debug_log_key()
+    st.session_state[key] = []
+
+
+# =============================================================================
+# VENDOR DETECTION (using patterns from vendors.py)
+# =============================================================================
+def detect_vendor(filename: str, text_content: str) -> str:
+    """
+    Detect vendor from filename and text content using patterns in vendors.py.
+    Returns vendor name or None.
+    """
+    try:
+        from vendors import VENDOR_PATTERNS
+    except ImportError:
+        return None
+    
+    combined = (filename + ' ' + text_content).lower()
+    
+    for vendor_name, config in VENDOR_PATTERNS.items():
+        patterns = config.get('patterns', [])
+        for pattern in patterns:
+            if pattern.lower() in combined:
+                return vendor_name
+    
+    return None
+
+
+def get_vendor_extractor(vendor_name: str) -> str:
+    """
+    Get the extractor type for a vendor.
+    Returns: 'hirayama', 'french_fnb', 'maruyata', 'ai', etc.
+    """
+    try:
+        from vendors import VENDOR_PATTERNS
+    except ImportError:
+        return 'ai'
+    
+    if vendor_name in VENDOR_PATTERNS:
+        return VENDOR_PATTERNS[vendor_name].get('extractor', 'ai')
+    
+    return 'ai'
 
 
 # =============================================================================
@@ -334,8 +364,7 @@ def extract_invoice_data(uploaded_file) -> list:
     1. Try fast regex parsers for known vendors
     2. Fall back to AI Vision for unknown vendors or scanned PDFs
     """
-    global _debug_log
-    _debug_log = []  # Clear log for this extraction
+    clear_debug_log()  # Clear log for this extraction (thread-safe)
     
     filename = uploaded_file.name.lower()
     debug_log(f"📄 Starting extraction: {uploaded_file.name}")
@@ -389,22 +418,8 @@ def extract_invoice_data(uploaded_file) -> list:
         else:
             debug_log(f"   → PDF has text content")
         
-        # Determine vendor and choose extraction method
-        vendor_detected = None
-        
-        if 'hirayama' in filename or 'ひら山' in text_content.lower():
-            vendor_detected = 'hirayama'
-        elif 'french' in filename or 'fnb' in filename or 'フレンチ' in text_content:
-            vendor_detected = 'french_fnb'
-        elif 'maruyata' in filename or '丸弥太' in text_content:
-            vendor_detected = 'maruyata'
-        elif 'キャビア' in text_content or 'KAVIARI' in text_content:
-            vendor_detected = 'french_fnb'
-        elif '和牛ヒレ' in text_content:
-            vendor_detected = 'hirayama'
-        elif any(x in text_content for x in ['うに', '鮪', '天然鯛', '甘鯛', '信州サーモン']):
-            vendor_detected = 'maruyata'
-        
+        # Detect vendor using patterns from vendors.py
+        vendor_detected = detect_vendor(filename, text_content)
         debug_log(f"   → Vendor detected: {vendor_detected}")
         debug_log(f"   → Is scanned: {is_scanned}")
         
@@ -412,13 +427,17 @@ def extract_invoice_data(uploaded_file) -> list:
         
         # Try regex parser for known vendors (if not scanned)
         if vendor_detected and not is_scanned and text_content:
-            debug_log(f"   → Trying regex parser for {vendor_detected}")
-            if vendor_detected == 'hirayama':
+            extractor = get_vendor_extractor(vendor_detected)
+            debug_log(f"   → Trying extractor: {extractor}")
+            
+            if extractor == 'hirayama':
                 records = parse_hirayama_invoice(text_content)
-            elif vendor_detected == 'french_fnb':
+            elif extractor == 'french_fnb':
                 records = parse_french_fnb_invoice(text_content)
-            elif vendor_detected == 'maruyata':
+            elif extractor == 'maruyata':
                 records = parse_maruyata_invoice(text_content)
+            # else: use AI extraction
+            
             debug_log(f"   → Regex parser returned {len(records)} records")
         
         # If regex failed or unknown vendor, use AI extraction
