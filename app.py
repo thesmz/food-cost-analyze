@@ -678,9 +678,10 @@ def display_beef_analysis(sales_df, invoices_df, beef_per_serving,
     if not beef_sales.empty:
         st.subheader("🍽️ Sales Details / 売上明細")
         
-        # Calculate revenue using helper function
+        # Calculate revenue using helper function (adds estimated_price column)
         sales_display = calculate_revenue(beef_sales)
-        sales_display = sales_display[['code', 'name', 'category', 'qty', 'price', 'calculated_revenue']].copy()
+        # Use estimated_price (adjusted) instead of original price
+        sales_display = sales_display[['code', 'name', 'category', 'qty', 'estimated_price', 'calculated_revenue']].copy()
         
         sales_display.columns = ['Code/コード', 'Item/品目', 'Category/カテゴリ', 'Qty/数量', 'Price/単価', 'Revenue/売上']
         sales_display['Price/単価'] = sales_display['Price/単価'].apply(lambda x: f"¥{x:,.0f}" if pd.notna(x) and x > 0 else "N/A")
@@ -797,9 +798,10 @@ def display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yi
     if not caviar_sales.empty:
         st.subheader("🍽️ Sales Details / 売上明細")
         
-        # Calculate revenue using helper function
+        # Calculate revenue using helper function (adds estimated_price column)
         sales_display = calculate_revenue(caviar_sales)
-        sales_display = sales_display[['code', 'name', 'category', 'qty', 'price', 'calculated_revenue']].copy()
+        # Use estimated_price (adjusted) instead of original price
+        sales_display = sales_display[['code', 'name', 'category', 'qty', 'estimated_price', 'calculated_revenue']].copy()
         
         sales_display.columns = ['Code/コード', 'Item/品目', 'Category/カテゴリ', 'Qty/数量', 'Price/単価', 'Revenue/売上']
         sales_display['Price/単価'] = sales_display['Price/単価'].apply(lambda x: f"¥{x:,.0f}" if pd.notna(x) and x > 0 else "N/A")
