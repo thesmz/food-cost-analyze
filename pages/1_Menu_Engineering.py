@@ -1,6 +1,6 @@
 """
 Menu Engineering - BCG Matrix Analysis
-A la Carte items only (excludes Tasting Menus)
+Analyze food items by category (excludes beverages by default)
 
 IMPORTANT: Food costs are calculated from:
 1. Default percentage (user-adjustable slider)
@@ -20,11 +20,12 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import init_supabase, load_sales, get_date_range, get_data_summary
+from config import FOOD_CATEGORIES, BEVERAGE_CATEGORIES
 
 st.set_page_config(page_title="Menu Engineering | The Shinmonzen", page_icon="📈", layout="wide")
 
 st.title("📈 Menu Engineering / メニュー分析")
-st.markdown("**BCG Matrix Analysis** - A La Carte Items Only")
+st.markdown("**BCG Matrix Analysis** - Food Items by Category")
 
 
 def is_valid_item_name(name) -> bool:
@@ -94,23 +95,59 @@ if sales_df.empty:
     st.warning("No sales data available. Please upload data in the main app.")
     st.stop()
 
-# STRICT FILTER: Only 'A la carte' category
+# CATEGORY SELECTION (instead of hardcoded 'A la carte')
 if 'category' not in sales_df.columns:
     st.error("Category column not found in sales data")
     st.stop()
 
-alacarte_df = sales_df[sales_df['category'] == 'A la carte'].copy()
+# Get all available categories in the data
+available_categories = sorted(sales_df['category'].dropna().unique().tolist())
 
-if alacarte_df.empty:
-    st.warning("No 'A la carte' items found in the data.")
-    st.info(f"Categories in data: {', '.join(sales_df['category'].unique())}")
+if not available_categories:
+    st.error("No categories found in sales data")
+    st.stop()
+
+# Determine default selections (food categories, exclude beverages)
+default_selection = [
+    c for c in available_categories 
+    if c in FOOD_CATEGORIES or c not in BEVERAGE_CATEGORIES
+]
+# Filter out beverages
+default_selection = [
+    c for c in default_selection 
+    if c not in BEVERAGE_CATEGORIES
+]
+# Fallback if no match
+if not default_selection:
+    default_selection = available_categories[:1] if available_categories else []
+
+# Allow user to choose categories
+st.sidebar.markdown("---")
+st.sidebar.subheader("📂 Category Filter")
+selected_categories = st.sidebar.multiselect(
+    "Analyze Categories",
+    options=available_categories,
+    default=default_selection,
+    help="Select which categories to include in analysis"
+)
+
+if not selected_categories:
+    st.warning("Please select at least one category in the sidebar.")
+    st.stop()
+
+# Filter by selected categories
+filtered_df = sales_df[sales_df['category'].isin(selected_categories)].copy()
+
+if filtered_df.empty:
+    st.warning(f"No items found in selected categories: {', '.join(selected_categories)}")
+    st.info(f"Available categories: {', '.join(available_categories)}")
     st.stop()
 
 # Filter valid item names
-alacarte_df = alacarte_df[alacarte_df['name'].apply(is_valid_item_name)]
+filtered_df = filtered_df[filtered_df['name'].apply(is_valid_item_name)]
 
 # Aggregate by item
-item_sales = alacarte_df.groupby('name').agg({
+item_sales = filtered_df.groupby('name').agg({
     'qty': 'sum',
     'net_total': 'sum',
     'price': 'mean'
@@ -192,7 +229,8 @@ for _, row in item_sales.iterrows():
 
 menu_df = pd.DataFrame(menu_data)
 
-st.info(f"📊 Analyzing **{len(menu_df)}** A la carte items | Default Food Cost: **{default_cost_pct}%**")
+categories_display = ", ".join(selected_categories[:3]) + ("..." if len(selected_categories) > 3 else "")
+st.info(f"📊 Analyzing **{len(menu_df)}** items from [{categories_display}] | Default Food Cost: **{default_cost_pct}%**")
 
 # Calculate averages
 avg_qty = menu_df['Qty Sold'].mean()

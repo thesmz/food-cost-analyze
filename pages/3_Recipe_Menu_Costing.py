@@ -15,6 +15,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import init_supabase, load_invoices, get_date_range
+from config import YIELD_RATES
 
 st.set_page_config(
     page_title="Recipe & Menu Costing | The Shinmonzen",
@@ -141,11 +142,51 @@ Return ONLY valid JSON: {{"original": "English"}}"""
 
 
 # =============================================================================
+# HELPER: Get Default Yield from Config
+# =============================================================================
+def get_default_yield_for_ingredient(item_name: str, category: str) -> int:
+    """
+    Get default yield percentage from YIELD_RATES based on ingredient name/category.
+    """
+    item_lower = item_name.lower()
+    
+    # Check by specific ingredient patterns
+    if any(x in item_lower for x in ['beef', 'tenderloin', 'wagyu', 'ヒレ', '牛']):
+        return int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
+    elif any(x in item_lower for x in ['caviar', 'キャビア']):
+        return int(YIELD_RATES.get('caviar', 1.0) * 100)
+    elif any(x in item_lower for x in ['fish', 'fillet', '鮪', '鯛']):
+        return int(YIELD_RATES.get('fish_fillet', 0.90) * 100)
+    elif any(x in item_lower for x in ['whole fish', 'うに', '蛤']):
+        return int(YIELD_RATES.get('fish_whole', 0.45) * 100)
+    elif any(x in item_lower for x in ['shellfish', 'crab', 'lobster', '海老']):
+        return int(YIELD_RATES.get('shellfish', 0.40) * 100)
+    
+    # Check by category
+    if category == 'Meat':
+        return int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
+    elif category == 'Seafood':
+        return int(YIELD_RATES.get('fish_fillet', 0.90) * 100)
+    elif category == 'Produce':
+        return int(YIELD_RATES.get('vegetables', 0.85) * 100)
+    elif category == 'Dairy':
+        return int(YIELD_RATES.get('caviar', 1.0) * 100)  # Dairy usually 100%
+    
+    # Default
+    return int(YIELD_RATES.get('default', 0.80) * 100)
+
+
+# =============================================================================
+# LOAD PANTRY FROM INVOICES
+# =============================================================================
 # LOAD PANTRY FROM INVOICES
 # =============================================================================
 @st.cache_data(ttl=300)
 def load_pantry_from_invoices():
-    """Load ingredient prices from invoice data"""
+    """
+    Load ingredient prices from invoice data.
+    Keeps only the MOST RECENT price for each unique ingredient.
+    """
     # Import vendor name mapper from utils
     try:
         from utils import get_clean_vendor_name
@@ -165,10 +206,18 @@ def load_pantry_from_invoices():
     if invoices_df.empty:
         return {}
     
+    # Sort by date descending so most recent comes first
+    if 'date' in invoices_df.columns:
+        invoices_df = invoices_df.sort_values('date', ascending=False)
+    
     pantry = {}
     for _, row in invoices_df.iterrows():
         item_name = row.get('item_name', '')
         if not item_name:
+            continue
+        
+        # Skip if we already have this item (we want the most recent, which comes first)
+        if item_name in pantry:
             continue
         
         # Determine category based on patterns
@@ -196,16 +245,15 @@ def load_pantry_from_invoices():
         
         cost_per_unit = amount / qty if qty > 0 else amount
         
-        # Update or add to pantry
-        if item_name not in pantry or cost_per_unit > pantry[item_name]['cost_per_unit']:
-            pantry[item_name] = {
-                'cost_per_unit': cost_per_unit,
-                'unit': unit,
-                'vendor': vendor,
-                'category': category,
-                'english_name': None,
-                'last_date': str(row.get('date', ''))
-            }
+        # Add to pantry (most recent price)
+        pantry[item_name] = {
+            'cost_per_unit': cost_per_unit,
+            'unit': unit,
+            'vendor': vendor,
+            'category': category,
+            'english_name': None,
+            'last_date': str(row.get('date', ''))
+        }
     
     return pantry
 
@@ -372,6 +420,13 @@ with left_panel:
                 
                 # Transfer controls
                 st.markdown("**Transfer Settings**")
+                
+                # Get default yield based on ingredient
+                default_yield = get_default_yield_for_ingredient(
+                    selected_item_name, 
+                    item_info.get('category', 'Other')
+                )
+                
                 trans_col1, trans_col2 = st.columns(2)
                 with trans_col1:
                     transfer_qty = st.number_input(
@@ -386,9 +441,10 @@ with left_panel:
                         "Yield %",
                         min_value=1,
                         max_value=100,
-                        value=st.session_state.transfer_yield,
+                        value=default_yield,
                         step=5,
-                        key="transfer_yield_input"
+                        key="transfer_yield_input",
+                        help=f"Default {default_yield}% from config for this category"
                     )
                 
                 # Calculate cost preview

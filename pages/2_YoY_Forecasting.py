@@ -124,21 +124,40 @@ ingredient = st.selectbox(
     index=0
 )
 
-# Settings
+# Determine default yield based on item name (check YIELD_RATES)
+def get_default_yield(item_name: str) -> int:
+    """Get default yield percentage from config based on item name"""
+    item_lower = item_name.lower()
+    if 'beef' in item_lower or 'tenderloin' in item_lower or 'wagyu' in item_lower:
+        return int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
+    elif 'caviar' in item_lower:
+        return int(YIELD_RATES.get('caviar', 1.0) * 100)
+    elif 'fish' in item_lower or 'amadai' in item_lower:
+        return int(YIELD_RATES.get('fish_whole', 0.45) * 100)
+    elif 'vegetable' in item_lower or 'salad' in item_lower:
+        return int(YIELD_RATES.get('vegetables', 0.85) * 100)
+    else:
+        return int(YIELD_RATES.get('default', 0.80) * 100)
+
+default_yield = get_default_yield(ingredient)
+
+# Settings - unit is always grams (user inputs in grams)
+unit = 'g'
+
 col_a, col_b = st.columns(2)
 with col_a:
     usage_per_serving = st.number_input(
         "Usage per serving (g)", 
         min_value=1, max_value=1000, 
         value=100,
-        help="Estimated grams per serving"
+        help="Estimated grams of ingredient per dish serving"
     )
 with col_b:
     yield_pct = st.slider(
         "Yield %",
         min_value=30, max_value=100,
-        value=80,
-        help="Processing yield percentage"
+        value=default_yield,
+        help=f"Processing yield (default {default_yield}% from config)"
     ) / 100
 
 st.caption(f"**{ingredient}** - {usage_per_serving}g/serving, {yield_pct*100:.0f}% yield")
