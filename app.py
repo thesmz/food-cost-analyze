@@ -17,7 +17,8 @@ from utils import calculate_revenue, convert_quantity_to_grams, convert_quantity
 from database import (
     init_supabase, save_invoices, save_sales, 
     load_invoices, load_sales, get_date_range, get_data_summary,
-    delete_data_by_date_range, get_unique_vendors, delete_invoices_by_vendor
+    delete_data_by_date_range, get_unique_vendors, delete_invoices_by_vendor,
+    seed_reference_data
 )
 
 st.set_page_config(
@@ -175,6 +176,24 @@ def main():
                             st.rerun()
                 else:
                     st.info("No vendors found in database")
+            
+            st.markdown("---")
+            
+            # Seed reference data
+            st.markdown("**🌱 Seed Reference Data (Oct 2025):**")
+            st.caption("Load baseline test data from reference_data_oct2025.py")
+            if st.button("Load Reference Data", type="secondary"):
+                if supabase:
+                    with st.spinner("Loading reference data..."):
+                        results = seed_reference_data(supabase)
+                    if 'error' in results:
+                        st.error(f"Error: {results['error']}")
+                    else:
+                        st.success(f"✅ Loaded {results['invoices']} invoice records, {results['sales']} sales records")
+                        st.cache_data.clear()
+                        st.rerun()
+                else:
+                    st.error("Database not connected")
     
     # =========================================================================
     # MAIN PAGE - Configuration & Settings Expander (MOVED FROM SIDEBAR)
@@ -190,10 +209,12 @@ def main():
             )
         
         with col2:
+            # Default from config.py YIELD_RATES
+            default_beef_yield = int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
             beef_yield_pct = st.slider(
                 "Beef Yield (%) / 牛肉歩留まり",
-                min_value=50, max_value=100, value=65,
-                help="Usable meat after trimming (65% = 35% loss)"
+                min_value=50, max_value=100, value=default_beef_yield,
+                help=f"Usable meat after trimming (default {default_beef_yield}% from config)"
             ) / 100
         
         with col3:
@@ -204,10 +225,12 @@ def main():
             )
         
         with col4:
+            # Default from config.py YIELD_RATES
+            default_caviar_yield = int(YIELD_RATES.get('caviar', 1.0) * 100)
             caviar_yield_pct = st.slider(
                 "Caviar Yield (%) / キャビア歩留まり",
-                min_value=80, max_value=100, value=100,
-                help="Usable caviar (usually 100%)"
+                min_value=80, max_value=100, value=default_caviar_yield,
+                help=f"Usable caviar (default {default_caviar_yield}% from config)"
             ) / 100
     
     # =========================================================================

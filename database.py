@@ -486,3 +486,102 @@ def delete_invoices_by_vendor(supabase: Client, vendor: str) -> int:
         logger.error(f"Error deleting invoices: {e}")
         st.error(f"Error deleting invoices: {e}")
         return 0
+
+
+# =============================================================================
+# SEED DATA FUNCTIONS
+# =============================================================================
+
+def seed_reference_data(supabase: Client) -> Dict[str, int]:
+    """
+    Load reference data from reference_data_oct2025.py into database.
+    Useful for testing or resetting to a known good state.
+    
+    Returns dict with counts of records seeded.
+    """
+    if not supabase:
+        return {'invoices': 0, 'sales': 0, 'error': 'No database connection'}
+    
+    try:
+        from reference_data_oct2025 import (
+            BEEF_INVOICE_OCT_2025, 
+            CAVIAR_INVOICE_OCT_2025,
+            SALES_OCT_2025
+        )
+    except ImportError as e:
+        logger.error(f"Could not import reference data: {e}")
+        return {'invoices': 0, 'sales': 0, 'error': str(e)}
+    
+    results = {'invoices': 0, 'sales': 0}
+    
+    # Convert beef invoice entries to records
+    invoice_records = []
+    
+    # Beef entries
+    vendor_name = BEEF_INVOICE_OCT_2025.get('vendor', 'Meat Shop Hirayama')
+    for entry in BEEF_INVOICE_OCT_2025.get('entries', []):
+        invoice_records.append({
+            'date': entry['date'],
+            'vendor': vendor_name,
+            'item_name': BEEF_INVOICE_OCT_2025.get('item', '和牛ヒレ'),
+            'quantity': entry['qty_kg'],
+            'unit': 'kg',
+            'unit_price': BEEF_INVOICE_OCT_2025.get('unit_price', 12000),
+            'amount': entry['amount']
+        })
+    
+    # Caviar entries
+    vendor_name = CAVIAR_INVOICE_OCT_2025.get('vendor', 'French F&B Japan')
+    for entry in CAVIAR_INVOICE_OCT_2025.get('caviar_entries', []):
+        invoice_records.append({
+            'date': entry['date'],
+            'vendor': vendor_name,
+            'item_name': entry.get('item', 'KAVIARI Caviar'),
+            'quantity': entry.get('estimated_qty_g', 100) / 100,  # Convert to 100g units
+            'unit': '100g',
+            'unit_price': 19500,  # Approximate price per 100g
+            'amount': entry['amount']
+        })
+    
+    # Save invoice records
+    if invoice_records:
+        results['invoices'] = save_invoices(supabase, invoice_records)
+        logger.info(f"Seeded {results['invoices']} invoice records")
+    
+    # Convert sales data to records
+    # Note: reference data only has totals, not individual transactions
+    # We'll create summary records for October 2025
+    sales_records = []
+    
+    beef_data = SALES_OCT_2025.get('beef_tenderloin', {})
+    if beef_data:
+        sales_records.append({
+            'sale_date': '2025-10-31',
+            'code': 'REF-BEEF-OCT25',
+            'item_name': 'Beef Tenderloin',
+            'category': 'A la carte',
+            'qty': beef_data.get('total_servings', 0),
+            'price': beef_data.get('total_revenue', 0) / max(beef_data.get('total_servings', 1), 1),
+            'net_total': beef_data.get('total_revenue', 0)
+        })
+    
+    caviar_data = SALES_OCT_2025.get('egg_toast_caviar', {})
+    if caviar_data:
+        sales_records.append({
+            'sale_date': '2025-10-31',
+            'code': 'REF-CAVIAR-OCT25',
+            'item_name': 'Egg Toast Caviar',
+            'category': 'A la carte',
+            'qty': caviar_data.get('total_servings', 0),
+            'price': caviar_data.get('total_revenue', 0) / max(caviar_data.get('total_servings', 1), 1),
+            'net_total': caviar_data.get('total_revenue', 0)
+        })
+    
+    # Save sales records
+    if sales_records:
+        import pandas as pd
+        sales_df = pd.DataFrame(sales_records)
+        results['sales'] = save_sales(supabase, sales_df)
+        logger.info(f"Seeded {results['sales']} sales records")
+    
+    return results

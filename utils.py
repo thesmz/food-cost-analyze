@@ -79,21 +79,56 @@ def normalize_unit(unit: str) -> str:
     
     unit = str(unit).strip().lower()
     
-    # Common unit mappings
+    # Common unit mappings (Japanese and English variations)
     unit_map = {
+        # Weight units
         'キログラム': 'kg',
+        'kilo': 'kg',
+        'kilogram': 'kg',
+        'kg': 'kg',
         'グラム': 'g',
+        'gram': 'g',
+        'grams': 'g',
+        'g': 'g',
+        '100g': '100g',
+        '100グラム': '100g',
+        
+        # Piece/count units
         '個': 'pc',
         '本': 'pc',
         '丁': 'pc',
-        '缶': 'can',
-        '箱': 'box',
-        'パック': 'pack',
-        'kg': 'kg',
-        'g': 'g',
+        '枚': 'pc',
+        '尾': 'pc',
+        '匹': 'pc',
         'pc': 'pc',
         'pcs': 'pc',
-        '100g': '100g',
+        'piece': 'pc',
+        'pieces': 'pc',
+        'unit': 'pc',
+        'units': 'pc',
+        'ea': 'pc',
+        'each': 'pc',
+        
+        # Container units
+        '缶': 'can',
+        'can': 'can',
+        'cans': 'can',
+        'tin': 'can',
+        'tins': 'can',
+        '箱': 'box',
+        'box': 'box',
+        'boxes': 'box',
+        'パック': 'pack',
+        'pack': 'pack',
+        'packs': 'pack',
+        'pkg': 'pack',
+        'package': 'pack',
+        'bottle': 'bottle',
+        'bottles': 'bottle',
+        'jar': 'jar',
+        'jars': 'jar',
+        'bag': 'bag',
+        'bags': 'bag',
     }
     
     return unit_map.get(unit, unit)
@@ -208,6 +243,11 @@ def convert_quantity_to_grams(df: pd.DataFrame, default_unit_grams: float = 100)
     """
     df = df.copy()
     
+    # Known weight units
+    weight_units = {'kg', 'g', '100g'}
+    # Known container/piece units - treat as default_unit_grams each
+    container_units = {'pc', 'can', 'box', 'pack', 'tin', 'bottle', 'jar', 'bag', 'unit'}
+    
     def convert_row(row):
         qty = float(row.get('quantity', 0) or 0)
         unit = normalize_unit(str(row.get('unit', 'pc')))
@@ -218,12 +258,14 @@ def convert_quantity_to_grams(df: pd.DataFrame, default_unit_grams: float = 100)
             return qty
         elif unit == '100g':
             return qty * 100
-        elif unit in ['pc', 'can', 'box', 'pack']:
-            # Use the default grams per unit (e.g., 100g per caviar can)
+        elif unit in container_units:
+            # Known container type - use default grams per unit
             return qty * default_unit_grams
         else:
-            # Unknown unit - assume it's already in the target unit
-            return qty
+            # SAFETY NET: Unknown unit (e.g., "tin", "bottle", "portion")
+            # Assume it's a container/piece rather than 1 gram
+            # This is safer for expensive items like caviar/wine
+            return qty * default_unit_grams
     
     df['quantity_grams'] = df.apply(convert_row, axis=1)
     return df
