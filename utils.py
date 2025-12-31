@@ -195,36 +195,119 @@ def detect_vendor_from_text(text: str, filename: str = '') -> str:
 # SALES CALCULATION HELPERS (DRY - Don't Repeat Yourself)
 # =============================================================================
 
+def get_estimated_dish_price(item_name: str, category: str) -> float:
+    """
+    Get estimated price for a course item (items with price=0).
+    
+    Course items belong to prix fixe menus:
+    - Dinner Tasting: ¥19,480 / 7 dishes = ¥2,783 per dish
+    - Lunch Course: ¥6,900 / 4 dishes = ¥1,725 per dish
+    - Dessert: ¥1,725 (for both)
+    - Beef Tenderloin: ¥1,725 base + ¥5,682 supplement = ¥7,407
+    
+    Args:
+        item_name: Name of the dish
+        category: Category (Dinner, Lunch, Dessert, etc.)
+    
+    Returns:
+        Estimated price per dish
+    """
+    try:
+        from config import COURSE_PRICING
+    except ImportError:
+        # Fallback values if config not available
+        COURSE_PRICING = {
+            'dinner': {'per_dish': 2783},
+            'lunch': {'per_dish': 1725},
+            'dessert': {'per_dish': 1725},
+            'beef_supplement': 5682,
+        }
+    
+    item_lower = str(item_name).lower() if item_name else ''
+    category_lower = str(category).lower() if category else ''
+    
+    # Special case: Beef Tenderloin has a supplement
+    # Uses 1725 base + 5682 supplement = 7407 for both lunch and dinner
+    is_beef = 'beef tenderloin' in item_lower or 'wagyu' in item_lower
+    
+    if is_beef and ('dinner' in category_lower or 'lunch' in category_lower):
+        base_price = 1725  # Fixed base for beef
+        beef_supplement = COURSE_PRICING.get('beef_supplement', 5682)
+        return base_price + beef_supplement  # 7407
+    
+    # Determine base price by category for non-beef items
+    if 'dessert' in category_lower:
+        return COURSE_PRICING.get('dessert', {}).get('per_dish', 1725)
+    elif 'dinner' in category_lower:
+        return COURSE_PRICING.get('dinner', {}).get('per_dish', 2783)
+    elif 'lunch' in category_lower:
+        return COURSE_PRICING.get('lunch', {}).get('per_dish', 1725)
+    else:
+        # Default to dinner pricing for unknown categories
+        return COURSE_PRICING.get('dinner', {}).get('per_dish', 2783)
+
+
 def calculate_revenue(df: pd.DataFrame, fallback_price: float = None) -> pd.DataFrame:
     """
     Calculate revenue for sales data. Uses net_total if available,
     otherwise calculates from qty * price.
     
+    For course items (price=0), estimates price based on category:
+    - Dinner items: ¥2,783 per dish (¥19,480 / 7)
+    - Lunch items: ¥1,725 per dish (¥6,900 / 4)
+    - Dessert: ¥1,725
+    - Beef Tenderloin: base + ¥5,682 supplement
+    
     Args:
-        df: DataFrame with columns: qty, price, net_total
-        fallback_price: Optional fallback price if price is 0/null
+        df: DataFrame with columns: qty, price, net_total, name (optional), category (optional)
+        fallback_price: Optional fallback price if price is 0/null and no category
     
     Returns:
-        DataFrame with added 'calculated_revenue' column
+        DataFrame with added 'calculated_revenue' and 'estimated_price' columns
     """
     df = df.copy()
     
     def calc_row_revenue(row):
-        # Use net_total if it's valid
-        if pd.notna(row.get('net_total')) and row.get('net_total', 0) != 0:
-            return float(row['net_total'])
+        # Use net_total if it's valid and non-zero
+        net_total = row.get('net_total', 0)
+        if pd.notna(net_total) and float(net_total or 0) != 0:
+            return float(net_total)
         
-        # Otherwise calculate from qty * price
+        # Get quantity
         qty = float(row.get('qty', 0) or 0)
-        price = float(row.get('price', 0) or 0)
+        if qty == 0:
+            return 0.0
         
-        # Use fallback price if price is 0/null
-        if price == 0 and fallback_price:
-            price = fallback_price
+        # Check if price is valid
+        price = row.get('price', 0)
+        if pd.notna(price) and float(price or 0) > 0:
+            return qty * float(price)
         
-        return qty * price
+        # Price is 0/null - this is a course item, estimate price
+        item_name = row.get('name', '')
+        category = row.get('category', '')
+        
+        estimated_price = get_estimated_dish_price(item_name, category)
+        
+        # Use fallback if estimation returns 0
+        if estimated_price == 0 and fallback_price:
+            estimated_price = fallback_price
+        
+        return qty * estimated_price
+    
+    def get_price_used(row):
+        """Get the price that was used for calculation (for transparency)"""
+        price = row.get('price', 0)
+        if pd.notna(price) and float(price or 0) > 0:
+            return float(price)
+        
+        item_name = row.get('name', '')
+        category = row.get('category', '')
+        return get_estimated_dish_price(item_name, category)
     
     df['calculated_revenue'] = df.apply(calc_row_revenue, axis=1)
+    df['estimated_price'] = df.apply(get_price_used, axis=1)
+    
     return df
 
 

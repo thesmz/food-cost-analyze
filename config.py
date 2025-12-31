@@ -50,6 +50,31 @@ Rules:
 - Return ONLY the JSON object, nothing else"""
 
 # =============================================================================
+# COURSE PRICING - For estimating revenue of course items
+# Items with price=0 belong to prix fixe courses
+# =============================================================================
+COURSE_PRICING = {
+    # Dinner Tasting Menu: ¥19,480 for 7 dishes
+    'dinner': {
+        'course_price': 19480,
+        'num_dishes': 7,
+        'per_dish': 2783,  # 19480 / 7
+    },
+    # Lunch Course: ¥6,900 for 4 dishes  
+    'lunch': {
+        'course_price': 6900,
+        'num_dishes': 4,
+        'per_dish': 1725,  # 6900 / 4
+    },
+    # Dessert: same for both lunch and dinner
+    'dessert': {
+        'per_dish': 1725,
+    },
+    # Beef Tenderloin supplement (added to base course price)
+    'beef_supplement': 5682,
+}
+
+# =============================================================================
 # ANALYSIS THRESHOLDS
 # =============================================================================
 THRESHOLDS = {
