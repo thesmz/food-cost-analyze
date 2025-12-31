@@ -14,9 +14,9 @@ from io import StringIO
 import pandas as pd
 import streamlit as st
 
-# Import vendor name mapping
+# Import vendor name mapping from utils
 try:
-    from config import get_clean_vendor_name
+    from utils import get_clean_vendor_name
 except ImportError:
     def get_clean_vendor_name(name):
         return name

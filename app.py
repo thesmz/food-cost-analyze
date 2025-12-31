@@ -12,7 +12,7 @@ from datetime import datetime, date, timedelta
 
 # Import our modules
 from extractors import extract_sales_data, extract_invoice_data, get_debug_log
-from config import VENDOR_CONFIG, YIELD_RATES, THRESHOLDS
+from config import YIELD_RATES, THRESHOLDS
 from database import (
     init_supabase, save_invoices, save_sales, 
     load_invoices, load_sales, get_date_range, get_data_summary,
