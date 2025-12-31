@@ -752,7 +752,8 @@ def parse_maruyata_invoice(text: str) -> list:
 def extract_sales_data(uploaded_file) -> pd.DataFrame:
     """
     Extract sales data from CSV file (POS export format)
-    Returns DataFrame with columns: code, name, category, qty, price, net_total
+    Returns DataFrame with columns matching database: 
+    sale_date, code, item_name, category, qty, price, net_total
     """
     debug_log(f"📊 Sales extraction starting: {uploaded_file.name}")
     
@@ -779,136 +780,131 @@ def extract_sales_data(uploaded_file) -> pd.DataFrame:
             debug_log(f"   → ❌ Could not decode file")
             return pd.DataFrame()
         
-        # Check for header rows and find actual data start
         lines = text.split('\n')
         debug_log(f"   → Total lines: {len(lines)}")
         
-        # Find the row with column headers (contains 'Code' or 'Name' or 'Category')
+        # Extract date from header (look for date range like "2025-11-01 - 2025-11-30")
+        sale_date = None
+        date_pattern = r'\((\d{4}-\d{2}-\d{2})\s*-\s*(\d{4}-\d{2}-\d{2})\)'
+        for line in lines[:10]:
+            match = re.search(date_pattern, line)
+            if match:
+                # Use the start date of the range
+                sale_date = match.group(1)
+                debug_log(f"   → Found date range: {match.group(1)} - {match.group(2)}")
+                break
+        
+        if not sale_date:
+            # Try to extract from filename (e.g., "Nov_2025" or "202511")
+            filename = uploaded_file.name
+            month_match = re.search(r'(\d{4})[-_]?(\d{2})', filename)
+            if month_match:
+                sale_date = f"{month_match.group(1)}-{month_match.group(2)}-01"
+                debug_log(f"   → Date from filename: {sale_date}")
+            else:
+                # Default to first of current month
+                sale_date = datetime.now().strftime('%Y-%m-01')
+                debug_log(f"   → Using default date: {sale_date}")
+        
+        # Find the row with column headers
         header_row = 0
-        for i, line in enumerate(lines[:20]):  # Check first 20 lines
+        for i, line in enumerate(lines[:20]):
             if 'Code' in line and 'Name' in line and 'Category' in line:
                 header_row = i
-                debug_log(f"   → Found header at row {i}: {line[:80]}...")
+                debug_log(f"   → Found header at row {i}")
                 break
             elif 'Item code' in line or 'Item Code' in line:
                 header_row = i
                 debug_log(f"   → Found header at row {i}")
                 break
         
-        debug_log(f"   → Skipping {header_row} rows before header")
-        
         # Parse CSV with correct header row
         df = pd.read_csv(StringIO(text), skiprows=header_row)
+        debug_log(f"   → Parsed {len(df)} rows, columns: {list(df.columns)}")
         
-        debug_log(f"   → Parsed {len(df)} rows")
-        debug_log(f"   → Columns: {list(df.columns)}")
-        
-        # Normalize column names - expanded mapping
+        # Normalize column names to match DATABASE SCHEMA
         column_mapping = {
-            # Code variations
+            # Code
             'Code': 'code',
             'Item code': 'code',
             'Item Code': 'code',
             '商品コード': 'code',
             
-            # Name variations
-            'Name': 'name',
-            'Item name': 'name',
-            'Item Name': 'name',
-            '商品名': 'name',
+            # Name → item_name (DB column name)
+            'Name': 'item_name',
+            'Item name': 'item_name',
+            'Item Name': 'item_name',
+            '商品名': 'item_name',
             
-            # Category variations
+            # Category
             'Category': 'category',
             'カテゴリ': 'category',
             
-            # Qty variations
+            # Qty
             'Qty': 'qty',
             'qty': 'qty',
             'Quantity': 'qty',
             '数量': 'qty',
             
-            # Price variations
+            # Price
             'Price': 'price',
             'price': 'price',
             'Unit Price': 'price',
             '単価': 'price',
             
-            # Net total variations
+            # Net total
             'Net Item Total': 'net_total',
             'Net Total': 'net_total',
             'Net total': 'net_total',
             '売上合計': 'net_total',
-            'Gross Item Total': 'gross_total',
         }
         
         df = df.rename(columns=column_mapping)
         debug_log(f"   → After rename: {list(df.columns)}")
         
-        # If no net_total but has gross_total, use that
-        if 'net_total' not in df.columns and 'gross_total' in df.columns:
-            df['net_total'] = df['gross_total']
-            debug_log(f"   → Using gross_total as net_total")
-        
         # Ensure required columns exist
-        required = ['code', 'name', 'qty']
-        for col in required:
-            if col not in df.columns:
-                # Try to find similar column
-                for orig_col in df.columns:
-                    if col.lower() in orig_col.lower():
-                        df[col] = df[orig_col]
-                        debug_log(f"   → Mapped '{orig_col}' to '{col}'")
-                        break
-                else:
-                    df[col] = ''
-                    debug_log(f"   → ⚠️ Column '{col}' not found, using empty")
-        
-        # Add missing optional columns
+        if 'code' not in df.columns:
+            df['code'] = ''
+        if 'item_name' not in df.columns:
+            df['item_name'] = ''
         if 'category' not in df.columns:
             df['category'] = 'Other'
+        if 'qty' not in df.columns:
+            df['qty'] = 0
         if 'price' not in df.columns:
             df['price'] = 0
         if 'net_total' not in df.columns:
             df['net_total'] = 0
         
+        # Add sale_date column (from header)
+        df['sale_date'] = sale_date
+        
         # Clean data - remove Total rows and empty rows
         initial_count = len(df)
-        
-        # Remove rows where Code is empty or starts with "Total"
         df = df[df['code'].notna() & (df['code'] != '')]
         df = df[~df['code'].astype(str).str.contains('Total', case=False, na=False)]
-        
-        # Remove rows where Name contains "Total"
-        df = df[~df['name'].astype(str).str.contains('Total:', case=False, na=False)]
-        
+        df = df[~df['item_name'].astype(str).str.contains('Total:', case=False, na=False)]
         debug_log(f"   → Removed {initial_count - len(df)} total/empty rows")
         
-        # Clean numeric columns - handle comma-formatted numbers
+        # Clean numeric columns
         for col in ['qty', 'price', 'net_total']:
-            if col in df.columns:
-                # Convert to string, remove commas, then to numeric
-                df[col] = df[col].astype(str).str.replace(',', '').str.replace('%', '')
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df[col] = df[col].astype(str).str.replace(',', '').str.replace('%', '')
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
         # Remove zero quantity rows
         df = df[df['qty'] != 0]
         
-        debug_log(f"   → After cleanup: {len(df)} rows")
+        # Select columns matching DATABASE SCHEMA
+        result_df = df[['sale_date', 'code', 'item_name', 'category', 'qty', 'price', 'net_total']].copy()
         
-        # Select final columns
-        result_df = df[['code', 'name', 'category', 'qty', 'price', 'net_total']].copy()
-        
-        debug_log(f"   → ✅ Final result: {len(result_df)} sales records")
-        
-        if len(result_df) > 0:
-            debug_log(f"   → Sample: {result_df.iloc[0].to_dict()}")
+        debug_log(f"   → ✅ Final: {len(result_df)} records for {sale_date}")
         
         return result_df
     
     except Exception as e:
         import traceback
         debug_log(f"   → ❌ Error: {str(e)}")
-        debug_log(f"   → Traceback: {traceback.format_exc()}")
+        debug_log(f"   → {traceback.format_exc()}")
         return pd.DataFrame()
 
 

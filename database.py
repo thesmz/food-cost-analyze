@@ -134,6 +134,7 @@ def save_invoices(supabase: Client, records) -> int:
 def save_sales(supabase: Client, df: pd.DataFrame) -> int:
     """
     Save sales records to Supabase
+    Expects columns: sale_date, code, item_name, category, qty, price, net_total
     Returns number of records saved
     """
     if not supabase or df.empty:
@@ -144,24 +145,18 @@ def save_sales(supabase: Client, df: pd.DataFrame) -> int:
     
     for _, row in df.iterrows():
         try:
-            # Convert month (YYYY-MM) or date to proper date format
-            # Sales CSV has 'month' column like "2025-10"
-            sale_date = None
-            
-            # Try to get date from 'date' column first, then 'month'
-            if 'date' in row.index and pd.notna(row['date']) and str(row['date']).strip():
-                sale_date = str(row['date']).strip()
-            elif 'month' in row.index and pd.notna(row['month']) and str(row['month']).strip():
-                sale_date = str(row['month']).strip()
-            
-            if not sale_date:
+            # Get sale_date
+            sale_date = row.get('sale_date', '')
+            if not sale_date or pd.isna(sale_date):
                 continue
             
-            # Handle YYYY-MM format (from sales CSV)
-            if re.match(r'^\d{4}-\d{2}$', sale_date):
-                sale_date = f"{sale_date}-01"  # Add day
+            sale_date = str(sale_date).strip()
             
-            # Validate date format
+            # Handle YYYY-MM format
+            if re.match(r'^\d{4}-\d{2}$', sale_date):
+                sale_date = f"{sale_date}-01"
+            
+            # Validate date
             try:
                 parsed_date = datetime.strptime(sale_date, '%Y-%m-%d')
                 sale_date = parsed_date.date().isoformat()
@@ -171,7 +166,7 @@ def save_sales(supabase: Client, df: pd.DataFrame) -> int:
             data = {
                 'sale_date': sale_date,
                 'code': str(row.get('code', '')),
-                'item_name': str(row.get('name', '')),
+                'item_name': str(row.get('item_name', '')),
                 'category': str(row.get('category', '')),
                 'qty': float(row.get('qty', 0)) if pd.notna(row.get('qty')) else 0,
                 'price': float(row.get('price', 0)) if pd.notna(row.get('price')) else 0,
