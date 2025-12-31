@@ -192,6 +192,313 @@ def detect_vendor_from_text(text: str, filename: str = '') -> str:
 
 
 # =============================================================================
+# YIELD CALCULATION HELPERS
+# 
+# YIELD FLOW (from PURCHASED to SERVED):
+#   PURCHASED (raw) → BUTCHERY → TRIMMED → COOKING → COOKED (served)
+#   
+#   Example: 100kg raw @ 65% butchery, 80% cooking
+#     → 100 × 0.65 = 65kg trimmed
+#     → 65 × 0.80 = 52kg cooked
+# =============================================================================
+
+def get_yield_rate(item_name: str, category: str = None, yield_type: str = 'total') -> float:
+    """
+    Get yield rate for an ingredient.
+    
+    YIELD has TWO stages:
+    1. BUTCHERY: raw → trimmed (removing fat, bones, skin)
+    2. COOKING: trimmed → cooked (moisture loss, fat rendering)
+    
+    TOTAL yield = butchery × cooking
+    
+    Args:
+        item_name: Name of ingredient
+        category: Category (Meat, Seafood, etc.)
+        yield_type: 'total', 'butchery', or 'cooking'
+    
+    Returns:
+        Yield rate as decimal (e.g., 0.65 for 65%)
+    """
+    try:
+        from config import YIELD_RATES
+    except ImportError:
+        return 0.65  # Fallback
+    
+    item_lower = str(item_name).lower() if item_name else ''
+    
+    # Determine yield category from item name
+    yield_category = 'default'
+    
+    if any(x in item_lower for x in ['beef', 'tenderloin', 'wagyu', 'ヒレ', '牛']):
+        yield_category = 'beef_tenderloin'
+    elif any(x in item_lower for x in ['caviar', 'キャビア']):
+        yield_category = 'caviar'
+    elif any(x in item_lower for x in ['whole fish', '丸', '尾']):
+        yield_category = 'fish_whole'
+    elif any(x in item_lower for x in ['fillet', 'フィレ', '切身']):
+        yield_category = 'fish_fillet'
+    elif any(x in item_lower for x in ['lobster', 'crab', 'shrimp', '海老', '蟹', 'ロブスター']):
+        yield_category = 'shellfish'
+    elif any(x in item_lower for x in ['vegetable', 'salad', '野菜']):
+        yield_category = 'vegetables'
+    elif category == 'Seafood':
+        yield_category = 'fish_fillet'  # Default for seafood
+    elif category == 'Meat':
+        yield_category = 'beef_tenderloin'  # Default for meat
+    
+    # Get yield rate
+    rate_data = YIELD_RATES.get(yield_category, YIELD_RATES['default'])
+    
+    if isinstance(rate_data, dict):
+        return rate_data.get(yield_type, rate_data.get('total', 0.52))
+    else:
+        return rate_data  # Old format - just a number
+
+
+def calculate_yield_from_raw(raw_kg: float, butchery_yield: float, cooking_yield: float) -> dict:
+    """
+    Calculate cooked output from raw purchase.
+    
+    Flow: RAW → (butchery) → TRIMMED → (cooking) → COOKED
+    
+    Args:
+        raw_kg: Raw purchased amount in kg
+        butchery_yield: Butchery yield as decimal (e.g., 0.65)
+        cooking_yield: Cooking yield as decimal (e.g., 0.80)
+    
+    Returns:
+        Dict with: raw_kg, trimmed_kg, cooked_kg, total_yield
+    """
+    trimmed_kg = raw_kg * butchery_yield
+    cooked_kg = trimmed_kg * cooking_yield
+    total_yield = butchery_yield * cooking_yield
+    
+    return {
+        'raw_kg': raw_kg,
+        'trimmed_kg': trimmed_kg,
+        'cooked_kg': cooked_kg,
+        'butchery_yield': butchery_yield,
+        'cooking_yield': cooking_yield,
+        'total_yield': total_yield,
+        'butchery_loss_kg': raw_kg - trimmed_kg,
+        'cooking_loss_kg': trimmed_kg - cooked_kg,
+        'total_loss_kg': raw_kg - cooked_kg,
+    }
+
+
+def calculate_raw_needed(cooked_portion: float, item_name: str = '', category: str = '') -> dict:
+    """
+    Calculate how much RAW ingredient is needed for a given COOKED portion.
+    
+    Shows the full breakdown: cooked → trimmed → raw
+    
+    Args:
+        cooked_portion: Grams of cooked/plated product needed
+        item_name: Name of ingredient
+        category: Category (Meat, Seafood, etc.)
+    
+    Returns:
+        Dict with breakdown
+    """
+    butchery_yield = get_yield_rate(item_name, category, 'butchery')
+    cooking_yield = get_yield_rate(item_name, category, 'cooking')
+    total_yield = butchery_yield * cooking_yield
+    
+    # Work backwards: cooked → trimmed → raw
+    trimmed_g = cooked_portion / cooking_yield if cooking_yield > 0 else cooked_portion
+    raw_g = trimmed_g / butchery_yield if butchery_yield > 0 else trimmed_g
+    
+    return {
+        'cooked_g': cooked_portion,
+        'trimmed_g': trimmed_g,
+        'raw_g': raw_g,
+        'butchery_yield': butchery_yield,
+        'cooking_yield': cooking_yield,
+        'total_yield': total_yield
+    }
+
+
+def calculate_cost_for_portion(
+    cooked_portion: float,
+    cost_per_raw_unit: float,
+    raw_unit: str,
+    item_name: str = '',
+    category: str = ''
+) -> dict:
+    """
+    Calculate the TRUE cost for a cooked portion, accounting for all yield losses.
+    
+    Args:
+        cooked_portion: Grams of cooked/plated product
+        cost_per_raw_unit: Cost per unit of raw ingredient (e.g., ¥12,000/kg)
+        raw_unit: Unit of the raw cost ('kg', 'g', '100g', 'pc')
+        item_name: Ingredient name
+        category: Category
+    
+    Returns:
+        Dict with cost breakdown
+    """
+    # Convert cost to per-gram
+    if raw_unit == 'kg':
+        cost_per_gram = cost_per_raw_unit / 1000
+    elif raw_unit == '100g':
+        cost_per_gram = cost_per_raw_unit / 100
+    elif raw_unit == 'g':
+        cost_per_gram = cost_per_raw_unit
+    else:
+        # For 'pc' and other units, assume cost is per piece
+        cost_per_gram = cost_per_raw_unit
+    
+    # Calculate raw needed
+    breakdown = calculate_raw_needed(cooked_portion, item_name, category)
+    raw_g = breakdown['raw_g']
+    
+    # Calculate costs
+    raw_cost = raw_g * cost_per_gram
+    
+    return {
+        **breakdown,
+        'cost_per_raw_gram': cost_per_gram,
+        'raw_cost': round(raw_cost, 0),
+        'cost_per_cooked_gram': round(raw_cost / cooked_portion, 2) if cooked_portion > 0 else 0,
+    }
+
+
+# =============================================================================
+# YIELD RATE HELPERS - Centralized for consistency
+# =============================================================================
+
+def get_default_yield_for_item(item_name: str, category: str = '') -> int:
+    """
+    Get default yield percentage based on item name and category.
+    Used across all pages for consistency.
+    
+    Yield = Usable output / Raw input
+    - 65% yield means 1kg raw → 650g usable
+    
+    Args:
+        item_name: Name of ingredient
+        category: Optional category hint
+    
+    Returns:
+        Yield percentage as integer (e.g., 65 for 65%)
+    """
+    try:
+        from config import YIELD_RATES
+    except ImportError:
+        YIELD_RATES = {'default': 0.80}
+    
+    item_lower = str(item_name).lower() if item_name else ''
+    category_lower = str(category).lower() if category else ''
+    
+    # Check by specific ingredient patterns (most specific first)
+    if any(x in item_lower for x in ['beef tenderloin', 'wagyu', 'ヒレ', '和牛']):
+        return int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
+    
+    if any(x in item_lower for x in ['caviar', 'キャビア']):
+        return int(YIELD_RATES.get('caviar', 1.0) * 100)
+    
+    # Fish - check if fillet or whole
+    if any(x in item_lower for x in ['fillet', 'サク', '切り身']):
+        return int(YIELD_RATES.get('fish_fillet', 0.90) * 100)
+    if any(x in item_lower for x in ['whole', '丸', '姿']):
+        return int(YIELD_RATES.get('fish_whole', 0.45) * 100)
+    if any(x in item_lower for x in ['fish', '魚', '鮪', '鯛', 'サーモン', 'amadai', '甘鯛']):
+        # Default fish to fillet (more common in fine dining)
+        return int(YIELD_RATES.get('fish_fillet', 0.90) * 100)
+    
+    # Shellfish
+    if any(x in item_lower for x in ['うに', 'uni', 'sea urchin', '蛤', 'clam', '海老', 'shrimp', 'lobster', 'crab']):
+        return int(YIELD_RATES.get('shellfish', 0.40) * 100)
+    
+    # Other meats
+    if any(x in item_lower for x in ['duck', '鴨', 'pork', '豚', 'lamb', 'chicken']):
+        return int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
+    
+    # Produce
+    if any(x in item_lower for x in ['vegetable', '野菜', 'mushroom', 'きのこ', 'truffle']):
+        return int(YIELD_RATES.get('vegetables', 0.85) * 100)
+    
+    # Check by category
+    if category_lower:
+        if 'meat' in category_lower:
+            return int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
+        if 'seafood' in category_lower:
+            return int(YIELD_RATES.get('fish_fillet', 0.90) * 100)
+        if 'produce' in category_lower:
+            return int(YIELD_RATES.get('vegetables', 0.85) * 100)
+        if 'dairy' in category_lower or 'condiment' in category_lower:
+            return 100  # No waste
+    
+    return int(YIELD_RATES.get('default', 0.80) * 100)
+
+
+def calculate_raw_from_usable(usable_qty: float, yield_pct: float) -> float:
+    """
+    Calculate raw quantity needed to get desired usable quantity.
+    
+    Formula: raw = usable / yield
+    
+    Example: Need 100g cooked, yield 65% → raw = 100/0.65 = 153.8g
+    
+    Args:
+        usable_qty: Amount you WANT (cooked/final)
+        yield_pct: Yield as decimal (0.65 for 65%)
+    
+    Returns:
+        Raw quantity needed
+    """
+    if yield_pct <= 0:
+        yield_pct = 1.0
+    return usable_qty / yield_pct
+
+
+def calculate_usable_from_raw(raw_qty: float, yield_pct: float) -> float:
+    """
+    Calculate usable quantity from raw quantity.
+    
+    Formula: usable = raw * yield
+    
+    Example: Have 100g raw, yield 65% → usable = 100*0.65 = 65g
+    
+    Args:
+        raw_qty: Amount you HAVE (raw/purchased)
+        yield_pct: Yield as decimal (0.65 for 65%)
+    
+    Returns:
+        Usable quantity
+    """
+    return raw_qty * yield_pct
+
+
+def calculate_cost_for_usable(usable_qty: float, raw_cost_per_unit: float, yield_pct: float) -> dict:
+    """
+    Calculate cost to get a desired usable quantity.
+    
+    Args:
+        usable_qty: Amount you WANT (cooked/final)
+        raw_cost_per_unit: Cost per unit of RAW product
+        yield_pct: Yield as decimal (0.65 for 65%)
+    
+    Returns:
+        Dict with raw_qty_needed, raw_cost, cost_per_usable_unit
+    """
+    if yield_pct <= 0:
+        yield_pct = 1.0
+    
+    raw_qty_needed = usable_qty / yield_pct
+    total_cost = raw_qty_needed * raw_cost_per_unit
+    cost_per_usable = raw_cost_per_unit / yield_pct
+    
+    return {
+        'raw_qty_needed': raw_qty_needed,
+        'total_cost': total_cost,
+        'cost_per_usable_unit': cost_per_usable
+    }
+
+
+# =============================================================================
 # SALES CALCULATION HELPERS (DRY - Don't Repeat Yourself)
 # =============================================================================
 

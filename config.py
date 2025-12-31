@@ -86,18 +86,116 @@ THRESHOLDS = {
 }
 
 # =============================================================================
-# DEFAULT YIELD RATES - For waste analysis
-# These are industry standards, not prices
+# YIELD RATES - Processing yields for ingredients
+# 
+# YIELD CALCULATION FLOW (from PURCHASED RAW to COOKED):
+#   1. Purchase RAW (e.g., 100kg whole tenderloin)
+#   2. Butchery/Trimming → RAW × Butchery Yield = TRIMMED (ready to cook)
+#   3. Cooking → TRIMMED × Cooking Yield = COOKED (ready to serve)
+#   4. Total Yield = Butchery × Cooking
+#
+# Example: 100kg raw beef @ 65% butchery, 80% cooking
+#   → 100 × 0.65 = 65kg trimmed (ready to cook)
+#   → 65 × 0.80 = 52kg cooked (ready to serve)
+#   → Total: 52% of raw becomes servable
+#
+# WASTE ANALYSIS:
+#   - Purchased: from invoices (RAW)
+#   - Expected Trimmed: Purchased × Butchery Yield
+#   - Expected Cooked: Trimmed × Cooking Yield
+#   - Needed for Sales: Sales Qty × Portion Size
+#   - Variance: Expected Cooked - Needed
 # =============================================================================
 YIELD_RATES = {
-    'beef_tenderloin': 0.65,  # 65% yield after trimming
-    'caviar': 1.0,            # 100% yield (no waste)
-    'fish_whole': 0.45,       # 45% yield for whole fish
-    'fish_fillet': 0.90,      # 90% yield for fillets
-    'vegetables': 0.85,       # 85% yield after prep
-    'shellfish': 0.40,        # 40% yield (shells)
-    'default': 0.80           # Default 80% yield
+    # Beef Tenderloin (Wagyu)
+    # - Butchery: 65% (remove silverskin, fat cap, chain, head/tail)
+    # - Cooking: 80% (moisture/fat loss at medium-rare)
+    # - Total: 0.65 × 0.80 = 0.52
+    'beef_tenderloin': {
+        'butchery': 0.65,
+        'cooking': 0.80,
+        'total': 0.52,
+    },
+    
+    # Caviar - no processing loss
+    'caviar': {
+        'butchery': 1.0,
+        'cooking': 1.0,
+        'total': 1.0,
+    },
+    
+    # Whole Fish (e.g., Sea Bream, Amadai)
+    # - Butchery: 45% (head, bones, skin, scales, guts)
+    # - Cooking: 85% (moisture loss)
+    # - Total: 0.45 × 0.85 = 0.38
+    'fish_whole': {
+        'butchery': 0.45,
+        'cooking': 0.85,
+        'total': 0.38,
+    },
+    
+    # Fish Fillet (pre-portioned)
+    # - Butchery: 95% (minimal trim)
+    # - Cooking: 85% (moisture loss)
+    # - Total: 0.95 × 0.85 = 0.81
+    'fish_fillet': {
+        'butchery': 0.95,
+        'cooking': 0.85,
+        'total': 0.81,
+    },
+    
+    # Shellfish (lobster, crab)
+    # - Butchery: 40% (shells)
+    # - Cooking: 90% (minimal loss)
+    # - Total: 0.40 × 0.90 = 0.36
+    'shellfish': {
+        'butchery': 0.40,
+        'cooking': 0.90,
+        'total': 0.36,
+    },
+    
+    # Vegetables
+    # - Butchery: 85% (peel, stems, cores)
+    # - Cooking: 90% (some moisture loss)
+    # - Total: 0.85 × 0.90 = 0.77
+    'vegetables': {
+        'butchery': 0.85,
+        'cooking': 0.90,
+        'total': 0.77,
+    },
+    
+    # Default (conservative estimate)
+    'default': {
+        'butchery': 0.75,
+        'cooking': 0.85,
+        'total': 0.64,
+    },
 }
+
+
+def get_yield_rates(category: str) -> dict:
+    """Get butchery, cooking, and total yield for a category."""
+    if category in YIELD_RATES:
+        return YIELD_RATES[category]
+    return YIELD_RATES['default']
+
+
+def get_total_yield(category: str) -> float:
+    """Get total yield (raw → cooked) for an ingredient category."""
+    rates = get_yield_rates(category)
+    return rates.get('total', 0.52)
+
+
+def get_butchery_yield(category: str) -> float:
+    """Get butchery/trimming yield (raw → trimmed)."""
+    rates = get_yield_rates(category)
+    return rates.get('butchery', 0.65)
+
+
+def get_cooking_yield(category: str) -> float:
+    """Get cooking yield (trimmed → cooked)."""
+    rates = get_yield_rates(category)
+    return rates.get('cooking', 0.80)
 
 # =============================================================================
 # FOOD CATEGORIES - For filtering and classification

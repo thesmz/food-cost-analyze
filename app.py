@@ -12,8 +12,11 @@ from datetime import datetime, date, timedelta
 
 # Import our modules
 from extractors import extract_sales_data, extract_invoice_data, get_debug_log
-from config import YIELD_RATES, THRESHOLDS
-from utils import calculate_revenue, convert_quantity_to_grams, convert_quantity_to_kg
+from config import YIELD_RATES, THRESHOLDS, get_total_yield, get_butchery_yield, get_cooking_yield
+from utils import (
+    calculate_revenue, convert_quantity_to_grams, convert_quantity_to_kg,
+    get_yield_rate, calculate_raw_needed, calculate_yield_from_raw
+)
 from database import (
     init_supabase, save_invoices, save_sales, 
     load_invoices, load_sales, get_date_range, get_data_summary,
@@ -199,39 +202,62 @@ def main():
     # MAIN PAGE - Configuration & Settings Expander (MOVED FROM SIDEBAR)
     # =========================================================================
     with st.expander("⚙️ Configuration & Settings / 設定", expanded=False):
-        col1, col2, col3, col4 = st.columns(4)
+        st.markdown("### 🥩 Beef Tenderloin Settings")
+        st.caption("Yield Flow: **RAW** → (butchery) → **TRIMMED** → (cooking) → **COOKED**")
         
-        with col1:
+        beef_col1, beef_col2, beef_col3, beef_col4 = st.columns(4)
+        
+        with beef_col1:
             beef_per_serving = st.number_input(
-                "Beef per serving (g) / 1人前の牛肉量",
+                "Portion per serving (g)",
                 min_value=50, max_value=500, value=150,
-                help="Grams of beef tenderloin per serving (cooked)"
+                help="COOKED weight per serving (what goes on the plate)"
             )
         
-        with col2:
-            # Default from config.py YIELD_RATES
-            default_beef_yield = int(YIELD_RATES.get('beef_tenderloin', 0.65) * 100)
-            beef_yield_pct = st.slider(
-                "Beef Yield (%) / 牛肉歩留まり",
-                min_value=50, max_value=100, value=default_beef_yield,
-                help=f"Usable meat after trimming (default {default_beef_yield}% from config)"
+        with beef_col2:
+            # Default butchery yield from config
+            default_butchery = int(get_butchery_yield('beef_tenderloin') * 100)
+            beef_butchery_pct = st.slider(
+                "Butchery Yield (%)",
+                min_value=40, max_value=100, value=default_butchery,
+                help=f"Raw → Trimmed. Removes fat, silverskin, chain. Default {default_butchery}%"
             ) / 100
         
-        with col3:
+        with beef_col3:
+            # Default cooking yield from config
+            default_cooking = int(get_cooking_yield('beef_tenderloin') * 100)
+            beef_cooking_pct = st.slider(
+                "Cooking Yield (%)",
+                min_value=60, max_value=100, value=default_cooking,
+                help=f"Trimmed → Cooked. Moisture/fat loss. Default {default_cooking}%"
+            ) / 100
+        
+        with beef_col4:
+            # Show calculated total yield
+            beef_total_yield = beef_butchery_pct * beef_cooking_pct
+            st.metric(
+                "Total Yield",
+                f"{beef_total_yield*100:.0f}%",
+                help="Butchery × Cooking"
+            )
+            st.caption(f"100kg raw → {beef_total_yield*100:.0f}kg cooked")
+        
+        st.markdown("---")
+        st.markdown("### 🐟 Caviar Settings")
+        
+        caviar_col1, caviar_col2 = st.columns(2)
+        
+        with caviar_col1:
             caviar_per_serving = st.number_input(
-                "Caviar per serving (g) / 1人前のキャビア量",
+                "Caviar per serving (g)",
                 min_value=5, max_value=50, value=10,
                 help="Grams of caviar per serving"
             )
         
-        with col4:
-            # Default from config.py YIELD_RATES
-            default_caviar_yield = int(YIELD_RATES.get('caviar', 1.0) * 100)
-            caviar_yield_pct = st.slider(
-                "Caviar Yield (%) / キャビア歩留まり",
-                min_value=80, max_value=100, value=default_caviar_yield,
-                help=f"Usable caviar (default {default_caviar_yield}% from config)"
-            ) / 100
+        with caviar_col2:
+            # Caviar has no loss
+            caviar_yield_pct = 1.0
+            st.metric("Caviar Yield", "100%", help="No processing loss")
     
     # =========================================================================
     # SHOW UPLOAD SUCCESS/ERROR MESSAGES (Persistent across reruns)
@@ -375,10 +401,12 @@ def main():
     ])
     
     with tab1:
-        display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving, beef_yield_pct, caviar_yield_pct)
+        display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving, 
+                        beef_butchery_pct, beef_cooking_pct, caviar_yield_pct)
     
     with tab2:
-        display_beef_analysis(sales_df, invoices_df, beef_per_serving, beef_yield_pct)
+        display_beef_analysis(sales_df, invoices_df, beef_per_serving, 
+                             beef_butchery_pct, beef_cooking_pct)
     
     with tab3:
         display_caviar_analysis(sales_df, invoices_df, caviar_per_serving, caviar_yield_pct)
@@ -387,9 +415,12 @@ def main():
         display_vendor_items(invoices_df)
 
 
-def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving, beef_yield_pct, caviar_yield_pct):
+def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving, 
+                    beef_butchery_pct, beef_cooking_pct, caviar_yield_pct):
     """Display overview dashboard"""
     st.header("📊 Overview / 概要")
+    
+    beef_total_yield = beef_butchery_pct * beef_cooking_pct
     
     col1, col2 = st.columns(2)
     
@@ -403,13 +434,18 @@ def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving
             beef_sales_calc = calculate_revenue(beef_sales)
             total_beef_revenue = beef_sales_calc['calculated_revenue'].sum()
             
-            # Yield-adjusted raw beef needed
-            expected_raw_kg = (total_beef_qty * beef_per_serving) / beef_yield_pct / 1000
+            # Cooked beef needed for sales
+            cooked_needed_kg = (total_beef_qty * beef_per_serving) / 1000
+            
+            # Work backwards: cooked → trimmed → raw
+            trimmed_needed_kg = cooked_needed_kg / beef_cooking_pct if beef_cooking_pct > 0 else cooked_needed_kg
+            raw_needed_kg = trimmed_needed_kg / beef_butchery_pct if beef_butchery_pct > 0 else trimmed_needed_kg
             
             st.metric("Dishes Sold / 販売数", f"{total_beef_qty:.0f}")
             st.metric("Revenue / 売上", f"¥{total_beef_revenue:,.0f}")
-            st.metric("Raw Needed / 必要量(生)", f"{expected_raw_kg:.2f} kg",
-                     help=f"At {beef_yield_pct*100:.0f}% yield")
+            st.metric("Cooked Needed / 必要量(調理後)", f"{cooked_needed_kg:.2f} kg")
+            st.metric("Raw Needed / 必要量(生)", f"{raw_needed_kg:.2f} kg",
+                     help=f"At {beef_total_yield*100:.0f}% total yield ({beef_butchery_pct*100:.0f}% × {beef_cooking_pct*100:.0f}%)")
     
     with col2:
         st.subheader("🐟 Egg Toast Caviar")
@@ -421,13 +457,13 @@ def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving
             caviar_sales_calc = calculate_revenue(caviar_sales)
             total_caviar_revenue = caviar_sales_calc['calculated_revenue'].sum()
             
-            # Yield-adjusted caviar needed
-            expected_caviar_g = (total_caviar_qty * caviar_per_serving) / caviar_yield_pct
+            # Caviar needed (100% yield)
+            caviar_needed_g = total_caviar_qty * caviar_per_serving
             
             st.metric("Dishes Sold / 販売数", f"{total_caviar_qty:.0f}")
             st.metric("Revenue / 売上", f"¥{total_caviar_revenue:,.0f}")
-            st.metric("Caviar Needed / 必要量", f"{expected_caviar_g:.0f} g",
-                     help=f"At {caviar_yield_pct*100:.0f}% yield")
+            st.metric("Caviar Needed / 必要量", f"{caviar_needed_g:.0f} g",
+                     help="100% yield - no processing loss")
     
     # Purchase summary
     st.divider()
@@ -448,12 +484,31 @@ def display_overview(sales_df, invoices_df, beef_per_serving, caviar_per_serving
         st.info("No invoice data in selected period")
 
 
-def display_beef_analysis(sales_df, invoices_df, beef_per_serving, beef_yield_pct):
-    """Detailed beef tenderloin analysis with yield-adjusted calculations"""
+def display_beef_analysis(sales_df, invoices_df, beef_per_serving, 
+                         beef_butchery_pct, beef_cooking_pct):
+    """
+    Detailed beef tenderloin analysis with separate butchery and cooking yields.
+    
+    Yield Flow:
+    PURCHASED (raw) → BUTCHERY → TRIMMED → COOKING → COOKED
+    
+    Analysis compares:
+    - What we PURCHASED (raw kg)
+    - What we could GET after processing (cooked kg)
+    - What we NEEDED for sales (cooked kg)
+    """
     st.header("🥩 Beef Tenderloin Analysis / 牛肉分析")
     
-    # Show yield info
-    st.info(f"📐 **Yield Rate / 歩留まり率:** {beef_yield_pct*100:.0f}% | **Serving Size / 1人前:** {beef_per_serving}g (cooked)")
+    beef_total_yield = beef_butchery_pct * beef_cooking_pct
+    
+    # Show yield info with breakdown
+    st.info(f"""
+    📐 **Yield Flow / 歩留まり:**
+    • Butchery: {beef_butchery_pct*100:.0f}% (raw → trimmed)
+    • Cooking: {beef_cooking_pct*100:.0f}% (trimmed → cooked)
+    • **Total: {beef_total_yield*100:.0f}%** (raw → cooked)
+    | **Serving Size / 1人前:** {beef_per_serving}g (cooked weight)
+    """)
     
     # Filter beef data
     beef_sales = sales_df[sales_df['name'].str.contains('Beef Tenderloin', case=False, na=False)] if not sales_df.empty else pd.DataFrame()
@@ -463,68 +518,153 @@ def display_beef_analysis(sales_df, invoices_df, beef_per_serving, beef_yield_pc
         st.warning("No beef data available for analysis in selected period")
         return
     
-    col1, col2, col3 = st.columns(3)
+    # ==========================================
+    # CALCULATE FROM PURCHASED (FORWARD FLOW)
+    # ==========================================
     
-    # Calculate metrics
+    # Get purchased amount from invoices (RAW)
+    if not beef_invoices.empty:
+        beef_invoices_calc = convert_quantity_to_kg(beef_invoices)
+        purchased_raw_kg = beef_invoices_calc['quantity_kg'].sum()
+        total_cost = beef_invoices['amount'].sum()
+    else:
+        purchased_raw_kg = 0
+        total_cost = 0
+    
+    # Apply yields forward: RAW → TRIMMED → COOKED
+    trimmed_kg = purchased_raw_kg * beef_butchery_pct
+    cooked_available_kg = trimmed_kg * beef_cooking_pct
+    
+    # ==========================================
+    # CALCULATE FROM SALES (WHAT WE NEEDED)
+    # ==========================================
+    
     total_sold = beef_sales['qty'].sum() if not beef_sales.empty else 0
     
-    # Calculate revenue using helper function (no hardcoded prices)
+    # Calculate revenue
     if not beef_sales.empty:
         beef_sales_calc = calculate_revenue(beef_sales)
         total_revenue = beef_sales_calc['calculated_revenue'].sum()
     else:
         total_revenue = 0
     
-    # YIELD-ADJUSTED: Raw meat needed = (Qty Sold * Serving Size) / Yield %
-    cooked_portion_kg = (total_sold * beef_per_serving) / 1000
-    expected_raw_kg = (total_sold * beef_per_serving) / beef_yield_pct / 1000
+    # Cooked beef NEEDED for sales
+    cooked_needed_kg = (total_sold * beef_per_serving) / 1000
     
-    # Calculate purchases - use actual unit from invoices
-    if not beef_invoices.empty:
-        beef_invoices_calc = convert_quantity_to_kg(beef_invoices)
-        total_purchased_kg = beef_invoices_calc['quantity_kg'].sum()
-        total_cost = beef_invoices['amount'].sum()
-    else:
-        total_purchased_kg = 0
-        total_cost = 0
+    # For reference: how much raw WOULD we need to produce that cooked amount?
+    raw_needed_kg = cooked_needed_kg / beef_total_yield if beef_total_yield > 0 else cooked_needed_kg
+    
+    # ==========================================
+    # VARIANCE ANALYSIS
+    # ==========================================
+    
+    # Variance in cooked terms (what matters for serving)
+    cooked_variance_kg = cooked_available_kg - cooked_needed_kg
+    
+    # Variance in raw terms (purchase efficiency)
+    raw_variance_kg = purchased_raw_kg - raw_needed_kg
+    
+    # Display metrics
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Total Sold / 販売総数", f"{total_sold:.0f} servings")
-        st.metric("Total Revenue / 売上合計", f"¥{total_revenue:,.0f}")
+        st.markdown("##### 📥 Purchased (Raw)")
+        st.metric("Raw Purchased / 仕入量(生)", f"{purchased_raw_kg:.2f} kg")
+        st.metric("Total Cost / 仕入原価", f"¥{total_cost:,.0f}")
+        if purchased_raw_kg > 0:
+            cost_per_kg = total_cost / purchased_raw_kg
+            st.caption(f"@ ¥{cost_per_kg:,.0f}/kg raw")
     
     with col2:
-        st.metric("Total Purchased / 仕入総量", f"{total_purchased_kg:.2f} kg")
-        st.metric("Total Cost / 仕入原価", f"¥{total_cost:,.0f}")
+        st.markdown("##### 🔪 After Processing")
+        st.metric("Trimmed / 整形後", f"{trimmed_kg:.2f} kg",
+                 help=f"{purchased_raw_kg:.2f}kg × {beef_butchery_pct*100:.0f}%")
+        st.metric("Cooked Available / 調理後", f"{cooked_available_kg:.2f} kg",
+                 help=f"{trimmed_kg:.2f}kg × {beef_cooking_pct*100:.0f}%")
+        st.caption(f"Butchery loss: {purchased_raw_kg - trimmed_kg:.2f}kg")
+        st.caption(f"Cooking loss: {trimmed_kg - cooked_available_kg:.2f}kg")
     
     with col3:
-        # Yield-adjusted waste ratio
-        if total_purchased_kg > 0:
-            waste_ratio = max(0, (total_purchased_kg - expected_raw_kg) / total_purchased_kg * 100)
-            st.metric("Waste Ratio / ロス率", f"{waste_ratio:.1f}%",
-                     delta=f"{waste_ratio - 15:.1f}%" if waste_ratio > 15 else None,
-                     delta_color="inverse",
-                     help="Yield-adjusted: comparing purchased vs raw needed")
+        st.markdown("##### 📊 Sales & Variance")
+        st.metric("Dishes Sold / 販売数", f"{total_sold:.0f} servings")
+        st.metric("Cooked Needed / 必要量", f"{cooked_needed_kg:.2f} kg",
+                 help=f"{total_sold} × {beef_per_serving}g")
         
-        if total_revenue > 0:
-            cost_ratio = (total_cost / total_revenue) * 100
-            st.metric("Cost Ratio / 原価率", f"{cost_ratio:.1f}%",
-                     delta=f"{cost_ratio - 35:.1f}%" if cost_ratio > 35 else None,
+        # Variance indicator
+        if cooked_variance_kg >= 0:
+            st.metric("Surplus / 余剰", f"{cooked_variance_kg:.2f} kg",
+                     delta="Stock buildup or waste",
+                     delta_color="off")
+        else:
+            st.metric("Shortage / 不足", f"{abs(cooked_variance_kg):.2f} kg",
+                     delta="Used inventory",
                      delta_color="inverse")
     
-    # Usage comparison chart with yield breakdown
-    st.subheader("📈 Usage Comparison / 使用量比較")
-    st.caption(f"※ Cooked portion: {cooked_portion_kg:.2f} kg → Raw needed (at {beef_yield_pct*100:.0f}% yield): {expected_raw_kg:.2f} kg")
+    # Efficiency ratios
+    st.divider()
+    ratio_col1, ratio_col2, ratio_col3 = st.columns(3)
     
-    comparison_data = pd.DataFrame({
-        'Category': ['Purchased\n仕入量', 'Raw Needed\n必要量(生)', 'Cooked Portion\n調理済(参考)', 'Variance\n差異'],
-        'Amount (kg)': [total_purchased_kg, expected_raw_kg, cooked_portion_kg, max(0, total_purchased_kg - expected_raw_kg)]
+    with ratio_col1:
+        if total_revenue > 0:
+            cost_ratio = (total_cost / total_revenue) * 100
+            st.metric("Food Cost Ratio / 原価率", f"{cost_ratio:.1f}%",
+                     delta=f"{'⚠️ High' if cost_ratio > 35 else '✅ OK'}",
+                     delta_color="inverse" if cost_ratio > 35 else "normal")
+    
+    with ratio_col2:
+        if purchased_raw_kg > 0:
+            utilization = (cooked_needed_kg / cooked_available_kg * 100) if cooked_available_kg > 0 else 0
+            st.metric("Utilization / 利用率", f"{utilization:.1f}%",
+                     help="Cooked needed ÷ Cooked available")
+    
+    with ratio_col3:
+        if total_sold > 0:
+            cost_per_serving = total_cost / total_sold
+            st.metric("Cost per Serving / 1皿原価", f"¥{cost_per_serving:,.0f}")
+    
+    # Visual breakdown chart
+    st.subheader("📈 Yield Flow Visualization / 歩留まりフロー")
+    
+    # Waterfall-style data
+    flow_data = pd.DataFrame({
+        'Stage': ['1. Purchased\n(Raw)', '2. Butchery Loss', '3. Trimmed', '4. Cooking Loss', '5. Cooked Available', '6. Cooked Needed', '7. Variance'],
+        'Amount (kg)': [
+            purchased_raw_kg,
+            -(purchased_raw_kg - trimmed_kg),
+            trimmed_kg,
+            -(trimmed_kg - cooked_available_kg),
+            cooked_available_kg,
+            cooked_needed_kg,
+            cooked_variance_kg
+        ]
     })
     
-    fig = px.bar(comparison_data, x='Category', y='Amount (kg)', 
-                 color='Category',
-                 color_discrete_sequence=['#3366cc', '#ff9900', '#109618', '#dc3912'])
-    fig.update_layout(showlegend=False)
+    # Simple bar chart showing the flow
+    comparison_df = pd.DataFrame({
+        'Category': ['Purchased\n(Raw)', 'Trimmed\n(After Butchery)', 'Cooked\n(Available)', 'Cooked\n(Needed)', 'Variance'],
+        'Amount (kg)': [purchased_raw_kg, trimmed_kg, cooked_available_kg, cooked_needed_kg, abs(cooked_variance_kg)],
+        'Type': ['Input', 'Process', 'Process', 'Requirement', 'Surplus' if cooked_variance_kg >= 0 else 'Shortage']
+    })
+    
+    fig = px.bar(comparison_df, x='Category', y='Amount (kg)', 
+                 color='Type',
+                 color_discrete_map={
+                     'Input': '#3366cc',
+                     'Process': '#ff9900', 
+                     'Requirement': '#109618',
+                     'Surplus': '#dc3912',
+                     'Shortage': '#990099'
+                 })
+    fig.update_layout(showlegend=True)
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Summary explanation
+    st.caption(f"""
+    **Summary:** Purchased {purchased_raw_kg:.2f}kg raw → After {beef_butchery_pct*100:.0f}% butchery yield: {trimmed_kg:.2f}kg trimmed 
+    → After {beef_cooking_pct*100:.0f}% cooking yield: {cooked_available_kg:.2f}kg cooked available.
+    Sales required {cooked_needed_kg:.2f}kg cooked ({total_sold} servings × {beef_per_serving}g).
+    {'Surplus' if cooked_variance_kg >= 0 else 'Shortage'}: {abs(cooked_variance_kg):.2f}kg
+    """)
     
     # Detailed invoice breakdown
     if not beef_invoices.empty:
