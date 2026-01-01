@@ -72,6 +72,37 @@ sales_df['date'] = pd.to_datetime(sales_df['date'])
 sales_df['year'] = sales_df['date'].dt.year
 sales_df['month'] = sales_df['date'].dt.month
 
+# =============================================================================
+# FILTER OUT UNWANTED ITEMS
+# =============================================================================
+original_count = len(sales_df)
+
+# 1. Exclude Breakfast category
+if 'category' in sales_df.columns:
+    sales_df = sales_df[~sales_df['category'].str.lower().str.contains('breakfast', na=False)]
+
+# 2. Exclude items with price = 0 (course items)
+if 'price' in sales_df.columns:
+    sales_df = sales_df[(sales_df['price'].notna()) & (sales_df['price'] > 0)]
+
+# 3. Exclude Beverage department
+if 'department' in sales_df.columns:
+    sales_df = sales_df[~sales_df['department'].str.lower().str.contains('beverage', na=False)]
+
+# 4. Exclude "Open food" category
+if 'category' in sales_df.columns:
+    sales_df = sales_df[~sales_df['category'].str.lower().str.contains('open food', na=False)]
+
+# 5. Exclude categories with "other" in the name (Red other, etc.)
+if 'category' in sales_df.columns:
+    sales_df = sales_df[~sales_df['category'].str.lower().str.contains('other', na=False)]
+
+filtered_count = len(sales_df)
+
+if sales_df.empty:
+    st.warning("No items remaining after filtering. Check your data.")
+    st.stop()
+
 # Get available years
 available_years = sorted(sales_df['year'].unique())
 
