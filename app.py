@@ -15,7 +15,8 @@ from extractors import extract_sales_data, extract_invoice_data, get_debug_log
 from config import YIELD_RATES, THRESHOLDS, get_total_yield, get_butchery_yield, get_cooking_yield
 from utils import (
     calculate_revenue, convert_quantity_to_grams, convert_quantity_to_kg,
-    get_yield_rate, calculate_raw_needed, calculate_yield_from_raw
+    get_yield_rate, calculate_raw_needed, calculate_yield_from_raw,
+    filter_shipping_fees, get_clean_vendor_name
 )
 from database import (
     init_supabase, save_invoices, save_sales, 
@@ -289,6 +290,12 @@ def main():
     if supabase and db_has_data:
         invoices_df = load_invoices(supabase, start_date, end_date)
         sales_df = load_sales(supabase, start_date, end_date)
+        
+        # Filter out shipping fees from invoices
+        if not invoices_df.empty:
+            invoices_df = filter_shipping_fees(invoices_df, 'item_name')
+            # Clean vendor names
+            invoices_df['vendor'] = invoices_df['vendor'].apply(get_clean_vendor_name)
     
     # Handle file uploads - show Save button BEFORE processing
     if sales_files or invoice_files:

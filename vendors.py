@@ -21,6 +21,8 @@ VENDOR_NAME_MAP = {
     # ----- Meat & Fish -----
     'ミートショップひら山': 'Meat Shop Hirayama',
     'ひら山': 'Meat Shop Hirayama',
+    '株式会社ミートショップひらい': 'Meat Shop Hirayama',  # OCR variant
+    'ミートショップひらい': 'Meat Shop Hirayama',  # OCR variant
     
     '株式会社 丸弥太': 'Maruyata',
     '丸弥太': 'Maruyata',

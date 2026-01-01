@@ -10,6 +10,56 @@ from vendors import VENDOR_NAME_MAP, ITEM_PATTERNS
 from config import INGREDIENT_PATTERNS
 
 
+# =============================================================================
+# SHIPPING FEE / NON-FOOD ITEM DETECTION
+# =============================================================================
+SHIPPING_FEE_PATTERNS = [
+    '送料', '運賃', '配送料', '運送料', '宅配料', '発送料',
+    'shipping', 'delivery', 'freight', 'postage',
+    'クール便', 'チルド便', '冷凍便', '冷蔵便',
+    'クール代', 'クール料金',
+]
+
+def is_shipping_fee(item_name: str) -> bool:
+    """
+    Check if an item is a shipping/delivery fee (not actual food).
+    
+    Args:
+        item_name: Name of the item from invoice
+    
+    Returns:
+        True if item is a shipping fee, False otherwise
+    """
+    if not item_name:
+        return False
+    
+    item_lower = str(item_name).lower().strip()
+    
+    for pattern in SHIPPING_FEE_PATTERNS:
+        if pattern.lower() in item_lower:
+            return True
+    
+    return False
+
+
+def filter_shipping_fees(df: pd.DataFrame, item_column: str = 'item_name') -> pd.DataFrame:
+    """
+    Remove shipping fee items from a DataFrame.
+    
+    Args:
+        df: DataFrame containing invoice/item data
+        item_column: Name of the column containing item names
+    
+    Returns:
+        DataFrame with shipping fees removed
+    """
+    if df.empty or item_column not in df.columns:
+        return df
+    
+    mask = ~df[item_column].apply(is_shipping_fee)
+    return df[mask].copy()
+
+
 def get_clean_vendor_name(vendor_name: str) -> str:
     """
     Convert Japanese vendor name to clean English display name.
