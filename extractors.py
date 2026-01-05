@@ -492,8 +492,7 @@ def extract_invoice_from_excel(uploaded_file) -> list:
     """
     Extract invoice data from Excel file.
     Supports multiple vendor formats:
-    - French F&B (hardcoded columns)
-    - Manmatsu (万松青果) - column headers with brackets
+    - BtoBプラットフォーム format (French F&B, Manmatsu, etc.) - has [取引先会員名] column
     - Generic format (auto-detect)
     """
     filename = uploaded_file.name.lower()
@@ -529,18 +528,13 @@ def extract_invoice_from_excel(uploaded_file) -> list:
         # Detect format by column names
         col_names_str = ' '.join([str(c) for c in df.columns])
         
-        # Format 1: Manmatsu (万松青果) - columns with brackets like [商品名]
-        if '[商品名]' in col_names_str or '商品名' in col_names_str:
-            debug_log(f"   → Detected Manmatsu format")
-            records = parse_manmatsu_excel(df, filename)
+        # Format 1: BtoBプラットフォーム format - has [取引先会員名] (vendor) column
+        # This includes French F&B, Manmatsu, and other vendors using this system
+        if '[取引先会員名]' in col_names_str or '[商品名]' in col_names_str:
+            debug_log(f"   → Detected BtoBプラットフォーム format")
+            records = parse_btob_platform_excel(df, filename)
         
-        # Format 2: French F&B (numeric indices)
-        elif 'フレンチ' in filename or 'french' in filename or 'fnb' in filename:
-            debug_log(f"   → Detected French F&B format (by filename)")
-            uploaded_file.seek(0)
-            records = parse_french_fnb_excel(uploaded_file)
-        
-        # Format 3: Generic - try to auto-detect columns
+        # Format 2: Generic - try to auto-detect columns
         else:
             debug_log(f"   → Trying generic Excel extraction")
             records = parse_generic_excel(df, filename)
@@ -556,30 +550,33 @@ def extract_invoice_from_excel(uploaded_file) -> list:
         return []
 
 
-def parse_manmatsu_excel(df: pd.DataFrame, filename: str) -> list:
-    """Parse Manmatsu (万松青果) Excel format with bracket column names"""
+def parse_btob_platform_excel(df: pd.DataFrame, filename: str) -> list:
+    """
+    Parse BtoBプラットフォーム Excel format.
+    This system is used by multiple vendors (French F&B, Manmatsu, etc.)
+    The vendor name is in the [取引先会員名] column.
+    """
     records = []
-    debug_log(f"   → Parsing Manmatsu format: {len(df)} rows")
+    debug_log(f"   → Parsing BtoBプラットフォーム format: {len(df)} rows")
     
-    # Column mapping for Manmatsu format
-    # [商品名] = Item name, [数量] = Quantity, [単位] = Unit, [商品金額] = Amount
-    # [承認日] or [伝票日付] = Date
-    
+    # Column mapping for BtoBプラットフォーム format
     col_map = {}
     for col in df.columns:
         col_str = str(col)
-        if '商品名' in col_str:
+        if col_str == '[商品名]':
             col_map['item'] = col
-        elif '数量' in col_str:
+        elif col_str == '[数量]':
             col_map['qty'] = col
-        elif col_str == '[単位]' or col_str == '単位':
+        elif col_str == '[単位]':
             col_map['unit'] = col
-        elif '商品金額' in col_str:
+        elif col_str == '[商品金額]':
             col_map['amount'] = col
-        elif '承認日' in col_str or '伝票日付' in col_str:
+        elif col_str == '[伝票日付]':
             col_map['date'] = col
-        elif '単価' in col_str:
+        elif col_str == '[単価]':
             col_map['unit_price'] = col
+        elif col_str == '[取引先会員名]':
+            col_map['vendor'] = col  # KEY: Vendor name from data!
     
     debug_log(f"   → Column mapping: {col_map}")
     
@@ -588,6 +585,24 @@ def parse_manmatsu_excel(df: pd.DataFrame, filename: str) -> list:
     if missing:
         debug_log(f"   → ERROR: Missing required columns: {missing}")
         return []
+    
+    # Get vendor from data (use first non-empty value)
+    vendor_from_data = None
+    if 'vendor' in col_map:
+        vendor_values = df[col_map['vendor']].dropna().unique()
+        if len(vendor_values) > 0:
+            vendor_from_data = str(vendor_values[0])
+            debug_log(f"   → Vendor from data: {vendor_from_data}")
+    
+    # Fallback: try to get vendor from filename
+    if not vendor_from_data:
+        if 'french' in filename or 'fnb' in filename:
+            vendor_from_data = 'French F&B Japan'
+        elif 'manmatsu' in filename or '万松' in filename:
+            vendor_from_data = '万松青果株式会社'
+        else:
+            vendor_from_data = filename.replace('.xlsx', '').replace('.xls', '').replace('_', ' ').title()
+        debug_log(f"   → Vendor from filename: {vendor_from_data}")
     
     for idx, row in df.iterrows():
         try:
@@ -633,7 +648,7 @@ def parse_manmatsu_excel(df: pd.DataFrame, filename: str) -> list:
                     date_str = datetime.now().strftime('%Y-%m-01')
             
             records.append({
-                'vendor': '万松青果株式会社 (Manmatsu)',
+                'vendor': vendor_from_data,
                 'date': date_str,
                 'item_name': item_name.strip(),
                 'quantity': qty,
@@ -646,82 +661,14 @@ def parse_manmatsu_excel(df: pd.DataFrame, filename: str) -> list:
             debug_log(f"   → Row {idx} error: {e}")
             continue
     
-    debug_log(f"   → Manmatsu parser returned {len(records)} records")
+    debug_log(f"   → BtoBプラットフォーム parser returned {len(records)} records")
     return records
 
 
 def parse_french_fnb_excel(uploaded_file) -> list:
-    """Parse French F&B Excel format (original hardcoded column format)"""
-    try:
-        # Read Excel with no header to inspect structure
-        df = pd.read_excel(uploaded_file, header=None)
-        
-        if df.empty:
-            debug_log(f"   → French F&B Excel is empty")
-            return []
-        
-        records = []
-        
-        # French F&B Excel structure (hardcoded columns):
-        date_col = 15
-        product_col = 30
-        spec_col = 31
-        price_col = 32
-        qty_col = 33
-        unit_col = 34
-        amount_col = 35
-        
-        for idx in range(1, len(df)):  # Skip header row
-            try:
-                row = df.iloc[idx]
-                
-                date_val = row[date_col]
-                if pd.isna(date_val):
-                    continue
-                
-                if isinstance(date_val, datetime):
-                    date_str = date_val.strftime('%Y-%m-%d')
-                else:
-                    date_str = str(date_val)[:10]
-                
-                product_name = str(row[product_col]) if pd.notna(row[product_col]) else ""
-                if not product_name or product_name == 'nan':
-                    continue
-                
-                spec = str(row[spec_col]) if pd.notna(row[spec_col]) else ""
-                unit_price = row[price_col] if pd.notna(row[price_col]) else 0
-                qty = row[qty_col] if pd.notna(row[qty_col]) else 0
-                unit = str(row[unit_col]) if pd.notna(row[unit_col]) else "pc"
-                amount = row[amount_col] if pd.notna(row[amount_col]) else 0
-                
-                if qty == 0 or amount == 0:
-                    continue
-                
-                unit_str = unit if unit != 'nan' else 'pc'
-                if '100g' in spec:
-                    unit_str = '100g'
-                elif 'kg' in spec.lower():
-                    unit_str = 'kg'
-                
-                records.append({
-                    'vendor': 'フレンチ・エフ・アンド・ビー (French F&B Japan)',
-                    'date': date_str,
-                    'item_name': product_name.strip(),
-                    'quantity': float(qty),
-                    'unit': unit_str,
-                    'unit_price': float(unit_price) if pd.notna(unit_price) else 0,
-                    'amount': float(amount)
-                })
-                
-            except (IndexError, ValueError, TypeError) as e:
-                continue
-        
-        debug_log(f"   → French F&B parser returned {len(records)} records")
-        return records
-    
-    except Exception as e:
-        debug_log(f"   → French F&B Excel error: {e}")
-        return []
+    """DEPRECATED - Use parse_btob_platform_excel instead"""
+    debug_log(f"   → WARNING: parse_french_fnb_excel is deprecated")
+    return []
 
 
 def parse_generic_excel(df: pd.DataFrame, filename: str) -> list:

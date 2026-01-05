@@ -44,11 +44,13 @@ VENDOR_NAME_MAP = {
     '株式会社ミナト': 'Minato',
     '万松青果株式会社': 'Manmatsu',
     '万松青果': 'Manmatsu',
-    '万松青果株式会社 (Manmatsu)': 'Manmatsu',  # From Excel parser
+    '万松青果株式会社 (Manmatsu)': 'Manmatsu',  # Legacy parser output
     
     # ----- Specialty Foods -----
     'フレンチ・エフ・アンド・ビー': 'French F&B Japan',
+    'フレンチ・エフ・アンド・ビー・ジャパン株式会社': 'French F&B Japan',  # BtoBプラットフォーム
     'French F&B': 'French F&B Japan',
+    'フレンチ・エフ・アンド・ビー (French F&B Japan)': 'French F&B Japan',  # Legacy parser output
     
     '株式会社 LIBERTE JAPON': 'Liberte Japon',
     'LIBERTE JAPON': 'Liberte Japon',
