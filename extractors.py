@@ -489,25 +489,180 @@ def extract_invoice_data(uploaded_file) -> list:
 # EXCEL INVOICE EXTRACTION (French F&B)
 # =============================================================================
 def extract_invoice_from_excel(uploaded_file) -> list:
-    """Extract invoice data from Excel file (French F&B format)"""
+    """
+    Extract invoice data from Excel file.
+    Supports multiple vendor formats:
+    - French F&B (hardcoded columns)
+    - Manmatsu (万松青果) - column headers with brackets
+    - Generic format (auto-detect)
+    """
+    filename = uploaded_file.name.lower()
+    debug_log(f"   → Excel extraction starting for: {filename}")
+    
+    try:
+        # First, try to read with headers to inspect structure
+        uploaded_file.seek(0)
+        xl = pd.ExcelFile(uploaded_file)
+        sheet_names = xl.sheet_names
+        debug_log(f"   → Excel sheets: {sheet_names}")
+        
+        # Use first non-empty sheet
+        df = None
+        used_sheet = None
+        for sheet in sheet_names:
+            uploaded_file.seek(0)
+            temp_df = pd.read_excel(uploaded_file, sheet_name=sheet)
+            if not temp_df.empty:
+                df = temp_df
+                used_sheet = sheet
+                debug_log(f"   → Using sheet '{sheet}': {len(df)} rows, {len(df.columns)} columns")
+                break
+        
+        if df is None or df.empty:
+            debug_log(f"   → ERROR: All sheets are empty")
+            return []
+        
+        debug_log(f"   → Columns: {list(df.columns)[:10]}...")
+        
+        records = []
+        
+        # Detect format by column names
+        col_names_str = ' '.join([str(c) for c in df.columns])
+        
+        # Format 1: Manmatsu (万松青果) - columns with brackets like [商品名]
+        if '[商品名]' in col_names_str or '商品名' in col_names_str:
+            debug_log(f"   → Detected Manmatsu format")
+            records = parse_manmatsu_excel(df, filename)
+        
+        # Format 2: French F&B (numeric indices)
+        elif 'フレンチ' in filename or 'french' in filename or 'fnb' in filename:
+            debug_log(f"   → Detected French F&B format (by filename)")
+            uploaded_file.seek(0)
+            records = parse_french_fnb_excel(uploaded_file)
+        
+        # Format 3: Generic - try to auto-detect columns
+        else:
+            debug_log(f"   → Trying generic Excel extraction")
+            records = parse_generic_excel(df, filename)
+        
+        debug_log(f"   → Excel extraction returned {len(records)} records")
+        return records
+    
+    except Exception as e:
+        import traceback
+        error_msg = f"Error extracting Excel invoice: {type(e).__name__}: {e}"
+        debug_log(f"   → ERROR: {error_msg}")
+        debug_log(f"   → Traceback: {traceback.format_exc()}")
+        return []
+
+
+def parse_manmatsu_excel(df: pd.DataFrame, filename: str) -> list:
+    """Parse Manmatsu (万松青果) Excel format with bracket column names"""
+    records = []
+    debug_log(f"   → Parsing Manmatsu format: {len(df)} rows")
+    
+    # Column mapping for Manmatsu format
+    # [商品名] = Item name, [数量] = Quantity, [単位] = Unit, [商品金額] = Amount
+    # [承認日] or [伝票日付] = Date
+    
+    col_map = {}
+    for col in df.columns:
+        col_str = str(col)
+        if '商品名' in col_str:
+            col_map['item'] = col
+        elif '数量' in col_str:
+            col_map['qty'] = col
+        elif col_str == '[単位]' or col_str == '単位':
+            col_map['unit'] = col
+        elif '商品金額' in col_str:
+            col_map['amount'] = col
+        elif '承認日' in col_str or '伝票日付' in col_str:
+            col_map['date'] = col
+        elif '単価' in col_str:
+            col_map['unit_price'] = col
+    
+    debug_log(f"   → Column mapping: {col_map}")
+    
+    required = ['item', 'qty', 'amount']
+    missing = [r for r in required if r not in col_map]
+    if missing:
+        debug_log(f"   → ERROR: Missing required columns: {missing}")
+        return []
+    
+    for idx, row in df.iterrows():
+        try:
+            item_name = str(row[col_map['item']]) if pd.notna(row[col_map['item']]) else ""
+            if not item_name or item_name == 'nan' or len(item_name.strip()) < 2:
+                continue
+            
+            qty = float(row[col_map['qty']]) if pd.notna(row[col_map['qty']]) else 0
+            amount = float(row[col_map['amount']]) if pd.notna(row[col_map['amount']]) else 0
+            
+            if qty == 0 or amount == 0:
+                continue
+            
+            # Get optional fields
+            unit = str(row[col_map.get('unit', '')]) if col_map.get('unit') and pd.notna(row.get(col_map.get('unit'))) else 'pc'
+            if unit == 'nan':
+                unit = 'pc'
+            
+            unit_price = float(row[col_map['unit_price']]) if col_map.get('unit_price') and pd.notna(row.get(col_map.get('unit_price'))) else (amount / qty if qty > 0 else 0)
+            
+            # Get date
+            date_str = None
+            if col_map.get('date') and pd.notna(row.get(col_map.get('date'))):
+                date_val = row[col_map['date']]
+                if isinstance(date_val, datetime):
+                    date_str = date_val.strftime('%Y-%m-%d')
+                elif hasattr(date_val, 'strftime'):
+                    date_str = date_val.strftime('%Y-%m-%d')
+                else:
+                    date_str = str(date_val)[:10]
+            
+            if not date_str:
+                # Try to extract from filename
+                import re
+                date_match = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[_\s]*(\d{4})', filename, re.I)
+                if date_match:
+                    month_map = {'jan':'01','feb':'02','mar':'03','apr':'04','may':'05','jun':'06',
+                                'jul':'07','aug':'08','sep':'09','oct':'10','nov':'11','dec':'12'}
+                    month = month_map.get(date_match.group(1).lower(), '01')
+                    year = date_match.group(2)
+                    date_str = f"{year}-{month}-01"
+                else:
+                    date_str = datetime.now().strftime('%Y-%m-01')
+            
+            records.append({
+                'vendor': '万松青果株式会社 (Manmatsu)',
+                'date': date_str,
+                'item_name': item_name.strip(),
+                'quantity': qty,
+                'unit': unit,
+                'unit_price': unit_price,
+                'amount': amount
+            })
+            
+        except Exception as e:
+            debug_log(f"   → Row {idx} error: {e}")
+            continue
+    
+    debug_log(f"   → Manmatsu parser returned {len(records)} records")
+    return records
+
+
+def parse_french_fnb_excel(uploaded_file) -> list:
+    """Parse French F&B Excel format (original hardcoded column format)"""
     try:
         # Read Excel with no header to inspect structure
         df = pd.read_excel(uploaded_file, header=None)
         
         if df.empty:
+            debug_log(f"   → French F&B Excel is empty")
             return []
         
         records = []
         
-        # French F&B Excel structure:
-        # Column 15: Date (伝票日付)
-        # Column 30: Product name (商品名)
-        # Column 31: Spec/Unit (規格・入数/単位)
-        # Column 32: Unit price (単価)
-        # Column 33: Quantity (数量)
-        # Column 34: Unit (単位)
-        # Column 35: Amount (商品金額)
-        
+        # French F&B Excel structure (hardcoded columns):
         date_col = 15
         product_col = 30
         spec_col = 31
@@ -520,7 +675,6 @@ def extract_invoice_from_excel(uploaded_file) -> list:
             try:
                 row = df.iloc[idx]
                 
-                # Get date
                 date_val = row[date_col]
                 if pd.isna(date_val):
                     continue
@@ -530,23 +684,19 @@ def extract_invoice_from_excel(uploaded_file) -> list:
                 else:
                     date_str = str(date_val)[:10]
                 
-                # Get product name
                 product_name = str(row[product_col]) if pd.notna(row[product_col]) else ""
                 if not product_name or product_name == 'nan':
                     continue
                 
-                # Get other fields
                 spec = str(row[spec_col]) if pd.notna(row[spec_col]) else ""
                 unit_price = row[price_col] if pd.notna(row[price_col]) else 0
                 qty = row[qty_col] if pd.notna(row[qty_col]) else 0
                 unit = str(row[unit_col]) if pd.notna(row[unit_col]) else "pc"
                 amount = row[amount_col] if pd.notna(row[amount_col]) else 0
                 
-                # Skip invalid rows
                 if qty == 0 or amount == 0:
                     continue
                 
-                # Determine unit from spec if available
                 unit_str = unit if unit != 'nan' else 'pc'
                 if '100g' in spec:
                     unit_str = '100g'
@@ -566,11 +716,97 @@ def extract_invoice_from_excel(uploaded_file) -> list:
             except (IndexError, ValueError, TypeError) as e:
                 continue
         
+        debug_log(f"   → French F&B parser returned {len(records)} records")
         return records
     
     except Exception as e:
-        print(f"Error extracting Excel invoice: {e}")
+        debug_log(f"   → French F&B Excel error: {e}")
         return []
+
+
+def parse_generic_excel(df: pd.DataFrame, filename: str) -> list:
+    """Try to parse Excel with auto-detected columns"""
+    records = []
+    debug_log(f"   → Generic Excel parsing: {len(df)} rows")
+    
+    # Try to find columns by common Japanese/English names
+    col_map = {}
+    
+    for col in df.columns:
+        col_lower = str(col).lower()
+        col_str = str(col)
+        
+        # Item name
+        if any(x in col_str for x in ['商品名', '品名', 'item', 'product', 'name']):
+            col_map['item'] = col
+        # Quantity
+        elif any(x in col_str for x in ['数量', 'qty', 'quantity']):
+            col_map['qty'] = col
+        # Unit
+        elif col_str in ['単位', 'unit'] or col_lower == 'unit':
+            col_map['unit'] = col
+        # Amount
+        elif any(x in col_str for x in ['金額', 'amount', 'total', '合計']):
+            col_map['amount'] = col
+        # Date
+        elif any(x in col_str for x in ['日付', 'date', '伝票日', '納品日']):
+            col_map['date'] = col
+        # Unit price
+        elif any(x in col_str for x in ['単価', 'price', 'unit_price']):
+            col_map['unit_price'] = col
+    
+    debug_log(f"   → Auto-detected columns: {col_map}")
+    
+    if 'item' not in col_map:
+        debug_log(f"   → Could not find item column, trying first text column")
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                col_map['item'] = col
+                break
+    
+    if 'item' not in col_map:
+        debug_log(f"   → ERROR: Could not identify item column")
+        return []
+    
+    # Extract vendor from filename
+    vendor = filename.replace('.xlsx', '').replace('.xls', '').replace('_', ' ').title()
+    
+    for idx, row in df.iterrows():
+        try:
+            item_name = str(row[col_map['item']]) if pd.notna(row[col_map['item']]) else ""
+            if not item_name or item_name == 'nan':
+                continue
+            
+            qty = float(row[col_map.get('qty', col_map['item'])]) if col_map.get('qty') and pd.notna(row.get(col_map.get('qty'))) else 1
+            amount = float(row[col_map.get('amount', col_map['item'])]) if col_map.get('amount') and pd.notna(row.get(col_map.get('amount'))) else 0
+            
+            if amount == 0:
+                continue
+            
+            unit = str(row[col_map['unit']]) if col_map.get('unit') and pd.notna(row.get(col_map.get('unit'))) else 'pc'
+            unit_price = float(row[col_map['unit_price']]) if col_map.get('unit_price') and pd.notna(row.get(col_map.get('unit_price'))) else (amount / qty if qty > 0 else 0)
+            
+            date_str = datetime.now().strftime('%Y-%m-01')
+            if col_map.get('date') and pd.notna(row.get(col_map.get('date'))):
+                date_val = row[col_map['date']]
+                if isinstance(date_val, datetime):
+                    date_str = date_val.strftime('%Y-%m-%d')
+            
+            records.append({
+                'vendor': vendor,
+                'date': date_str,
+                'item_name': item_name.strip(),
+                'quantity': qty,
+                'unit': unit if unit != 'nan' else 'pc',
+                'unit_price': unit_price,
+                'amount': amount
+            })
+            
+        except Exception as e:
+            continue
+    
+    debug_log(f"   → Generic parser returned {len(records)} records")
+    return records
 
 
 # =============================================================================

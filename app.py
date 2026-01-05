@@ -356,14 +356,23 @@ def main():
                         progress_bar.progress(current_file / total_files, text=f"Processing {file.name}...")
                         debug_messages.append(f"📄 {file.name}")
                         
-                        records = extract_invoice_data(file)
-                        extractor_log = get_debug_log()
-                        debug_messages.extend(extractor_log)
-                        
-                        if isinstance(records, list) and len(records) > 0:
-                            invoice_records.extend(records)
-                        elif isinstance(records, pd.DataFrame) and not records.empty:
-                            invoice_records.extend(records.to_dict('records'))
+                        try:
+                            records = extract_invoice_data(file)
+                            extractor_log = get_debug_log()
+                            debug_messages.extend(extractor_log)
+                            
+                            if isinstance(records, list) and len(records) > 0:
+                                invoice_records.extend(records)
+                                debug_messages.append(f"   ✅ Extracted {len(records)} records")
+                            elif isinstance(records, pd.DataFrame) and not records.empty:
+                                invoice_records.extend(records.to_dict('records'))
+                                debug_messages.append(f"   ✅ Extracted {len(records)} records (DataFrame)")
+                            else:
+                                debug_messages.append(f"   ⚠️ No records extracted from {file.name}")
+                        except Exception as file_error:
+                            import traceback
+                            debug_messages.append(f"   ❌ ERROR processing {file.name}: {type(file_error).__name__}: {file_error}")
+                            debug_messages.append(f"   Traceback: {traceback.format_exc()[:500]}")
                     
                     if invoice_records:
                         new_invoices = pd.DataFrame(invoice_records)
@@ -371,16 +380,28 @@ def main():
                             saved = save_invoices(supabase, new_invoices)
                             debug_messages.append(f"✅ Saved {saved} invoice records")
                             invoice_count = saved
+                    else:
+                        debug_messages.append(f"⚠️ No invoice records to save")
                 
                 progress_bar.progress(1.0, text="Complete!")
                 
                 # Show result
                 st.success(f"✅ Saved {sales_count} sales, {invoice_count} invoices to database!")
                 
-                # Show debug log
-                with st.expander("🔍 Processing Log", expanded=False):
+                # Check for warnings/errors in debug messages
+                has_issues = any('❌' in msg or '⚠️' in msg for msg in debug_messages)
+                
+                # Show debug log (expanded if there were issues)
+                with st.expander("🔍 Processing Log", expanded=has_issues):
                     for msg in debug_messages:
-                        st.text(msg)
+                        if '❌' in msg:
+                            st.error(msg)
+                        elif '⚠️' in msg:
+                            st.warning(msg)
+                        elif '✅' in msg:
+                            st.success(msg)
+                        else:
+                            st.text(msg)
                 
                 # Clear and refresh
                 st.session_state.upload_key += 1

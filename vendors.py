@@ -21,8 +21,7 @@ VENDOR_NAME_MAP = {
     # ----- Meat & Fish -----
     'ミートショップひら山': 'Meat Shop Hirayama',
     'ひら山': 'Meat Shop Hirayama',
-    '株式会社ミートショップひらい': 'Meat Shop Hirayama',  # OCR variant
-    'ミートショップひらい': 'Meat Shop Hirayama',  # OCR variant
+    '株式会社ミートショップひら山': 'Meat Shop Hirayama',  # Full company name
     
     '株式会社 丸弥太': 'Maruyata',
     '丸弥太': 'Maruyata',
@@ -44,6 +43,8 @@ VENDOR_NAME_MAP = {
     '株式会社ミナト　青果事業部': 'Minato Seika',
     '株式会社ミナト': 'Minato',
     '万松青果株式会社': 'Manmatsu',
+    '万松青果': 'Manmatsu',
+    '万松青果株式会社 (Manmatsu)': 'Manmatsu',  # From Excel parser
     
     # ----- Specialty Foods -----
     'フレンチ・エフ・アンド・ビー': 'French F&B Japan',
