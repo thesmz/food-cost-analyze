@@ -241,13 +241,16 @@ def load_pantry_from_invoices():
     Load ingredient prices from invoice data.
     Keeps items PER VENDOR - same ingredient from different vendors shown separately.
     Uses most recent price for each item+vendor combination.
+    Filters out non-food items (shipping fees, payments, etc.)
     """
-    # Import vendor name mapper from utils
+    # Import helpers from utils
     try:
-        from utils import get_clean_vendor_name
+        from utils import get_clean_vendor_name, is_shipping_fee
     except ImportError:
         def get_clean_vendor_name(name):
             return name
+        def is_shipping_fee(name):
+            return False
     
     supabase = init_supabase()
     if not supabase:
@@ -271,6 +274,10 @@ def load_pantry_from_invoices():
     for _, row in invoices_df.iterrows():
         item_name = row.get('item_name', '')
         if not item_name:
+            continue
+        
+        # Skip non-food items (shipping fees, payments, etc.)
+        if is_shipping_fee(item_name):
             continue
         
         # Clean vendor name using mapping
