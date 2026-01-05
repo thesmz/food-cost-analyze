@@ -51,10 +51,10 @@ def get_anthropic_api_key():
 # =============================================================================
 # TRANSLATION FUNCTION (Using Claude API)
 # =============================================================================
-def translate_pantry_ingredients(pantry_dict):
+def translate_pantry_ingredients(pantry_dict, batch_size=50):
     """
-    Translate pantry ingredient names from Japanese to meaningful English using Claude API.
-    Smart translation - understands culinary context.
+    Translate ALL pantry ingredient names from Japanese to meaningful English using Claude API.
+    Processes in batches to handle large pantries.
     """
     import requests
     import json
@@ -67,14 +67,35 @@ def translate_pantry_ingredients(pantry_dict):
     if not api_key:
         return pantry_dict, "❌ ANTHROPIC_API_KEY not found. Add to secrets (root level or under [supabase]).", False
     
-    # Collect names needing translation
+    # Collect ALL names needing translation
     names_to_translate = [name for name, info in pantry_dict.items() if not info.get('english_name')]
     
     if not names_to_translate:
         return pantry_dict, "ℹ️ All ingredients already translated.", True
     
-    # Build prompt
-    prompt = f"""You are a culinary expert translator. Translate these Japanese food ingredient names to clear, meaningful English.
+    total_to_translate = len(names_to_translate)
+    total_translated = 0
+    errors = []
+    
+    # Process in batches
+    num_batches = (total_to_translate + batch_size - 1) // batch_size
+    
+    # Create a progress bar
+    progress_bar = st.progress(0, text=f"Translating {total_to_translate} ingredients...")
+    
+    for batch_num in range(num_batches):
+        start_idx = batch_num * batch_size
+        end_idx = min(start_idx + batch_size, total_to_translate)
+        batch_names = names_to_translate[start_idx:end_idx]
+        
+        # Update progress
+        progress_bar.progress(
+            (batch_num) / num_batches, 
+            text=f"Batch {batch_num + 1}/{num_batches}: Translating items {start_idx + 1}-{end_idx}..."
+        )
+        
+        # Build prompt for this batch
+        prompt = f"""You are a culinary expert translator. Translate these Japanese food ingredient names to clear, meaningful English.
 
 RULES:
 1. DO NOT just transliterate - understand what the ingredient IS
@@ -86,82 +107,91 @@ Examples:
 - "ﾊﾟﾚｯﾄ ﾛﾝﾄﾞ ﾄﾞ ﾌﾞｰﾙ ﾄﾞ ﾊﾞﾗｯﾄ ﾃﾞﾐｾﾙ（有塩）" → "Churned Butter (Lightly Salted)"
 - "KAVIARI キャビア クリスタル100g セレクションJG" → "KAVIARI Crystal Caviar 100g"
 - "和牛ヒレ" → "Wagyu Beef Tenderloin"
+- "ぶどう" → "Grapes"
+- "イチゴＳ" → "Strawberries (Small)"
+- "たまご" → "Eggs"
+- "ちぢみほうれん草" → "Curly Spinach"
 
-Ingredients:
-{json.dumps(names_to_translate[:50], ensure_ascii=False)}
+Ingredients to translate:
+{json.dumps(batch_names, ensure_ascii=False)}
 
-Return ONLY valid JSON object with original Japanese as keys and English translations as values.
-Example format: {{"ぶどう": "Grapes", "イチゴＳ": "Strawberries (Small)"}}"""
+Return ONLY a valid JSON object with original Japanese as keys and English translations as values."""
 
-    try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01"
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 4000,
-                "messages": [{"role": "user", "content": prompt}]
-            },
-            timeout=120
-        )
-        
-        if response.status_code == 200:
-            import re
-            resp_json = response.json()
+        try:
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01"
+                },
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 4000,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=120
+            )
             
-            # Check response structure
-            if 'content' not in resp_json or not resp_json['content']:
-                return pantry_dict, f"❌ Empty API response", False
-            
-            content = resp_json['content'][0].get('text', '').strip()
-            
-            if not content:
-                return pantry_dict, f"❌ No text in API response", False
-            
-            # Clean markdown if present
-            if content.startswith('```'):
-                content = re.sub(r'^```(?:json)?\s*', '', content)
-                content = re.sub(r'\s*```$', '', content)
-            
-            # Try to parse JSON
-            translations = None
-            try:
-                translations = json.loads(content)
-            except json.JSONDecodeError as je:
-                # Try to extract JSON from the content
-                match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
-                if match:
-                    try:
-                        translations = json.loads(match.group())
-                    except:
-                        pass
-            
-            if not translations or not isinstance(translations, dict):
-                # Show first 200 chars of response for debugging
-                preview = content[:200] if content else "(empty)"
-                return pantry_dict, f"❌ Could not parse API response. Preview: {preview}", False
-            
-            # Apply translations
-            count = 0
-            for name in pantry_dict:
-                if name in translations:
-                    pantry_dict[name]['english_name'] = translations[name]
-                    count += 1
-            
-            remaining = len([n for n in pantry_dict if not pantry_dict[n].get('english_name')])
-            return pantry_dict, f"✅ Translated {count} ingredients! ({remaining} remaining)", True
-        else:
-            error_detail = response.text[:200] if response.text else "No details"
-            return pantry_dict, f"❌ API error {response.status_code}: {error_detail}", False
-            
-    except requests.exceptions.Timeout:
-        return pantry_dict, f"❌ API timeout (>120s). Try with fewer items.", False
-    except Exception as e:
-        return pantry_dict, f"❌ Error: {type(e).__name__}: {str(e)[:100]}", False
+            if response.status_code == 200:
+                import re
+                resp_json = response.json()
+                
+                if 'content' not in resp_json or not resp_json['content']:
+                    errors.append(f"Batch {batch_num + 1}: Empty response")
+                    continue
+                
+                content = resp_json['content'][0].get('text', '').strip()
+                
+                if not content:
+                    errors.append(f"Batch {batch_num + 1}: No text in response")
+                    continue
+                
+                # Clean markdown if present
+                if content.startswith('```'):
+                    content = re.sub(r'^```(?:json)?\s*', '', content)
+                    content = re.sub(r'\s*```$', '', content)
+                
+                # Parse JSON
+                translations = None
+                try:
+                    translations = json.loads(content)
+                except json.JSONDecodeError:
+                    match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                    if match:
+                        try:
+                            translations = json.loads(match.group())
+                        except:
+                            pass
+                
+                if translations and isinstance(translations, dict):
+                    # Apply translations to pantry
+                    for name in batch_names:
+                        if name in translations:
+                            pantry_dict[name]['english_name'] = translations[name]
+                            total_translated += 1
+                else:
+                    errors.append(f"Batch {batch_num + 1}: Could not parse JSON")
+            else:
+                errors.append(f"Batch {batch_num + 1}: API error {response.status_code}")
+                
+        except requests.exceptions.Timeout:
+            errors.append(f"Batch {batch_num + 1}: Timeout")
+        except Exception as e:
+            errors.append(f"Batch {batch_num + 1}: {type(e).__name__}")
+    
+    # Complete progress
+    progress_bar.progress(1.0, text="Translation complete!")
+    
+    # Build result message
+    remaining = total_to_translate - total_translated
+    if errors:
+        error_summary = "; ".join(errors[:3])
+        if len(errors) > 3:
+            error_summary += f" (+{len(errors) - 3} more)"
+        return pantry_dict, f"⚠️ Translated {total_translated}/{total_to_translate}. Errors: {error_summary}", total_translated > 0
+    else:
+        return pantry_dict, f"✅ Translated {total_translated} ingredients!", True
 
 
 # =============================================================================
