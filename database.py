@@ -84,7 +84,7 @@ def batch_upsert(
     table: str,
     records: List[Dict],
     conflict_columns: str = None,
-    chunk_size: int = 50
+    chunk_size: int = 100  # Increased from 50
 ) -> int:
     """
     Generic batch upsert/insert for any table.
@@ -94,7 +94,7 @@ def batch_upsert(
         table: Table name
         records: List of record dicts
         conflict_columns: Comma-separated columns for upsert (or None for insert)
-        chunk_size: Records per batch
+        chunk_size: Records per batch (default 100)
     
     Returns:
         Number of records saved
@@ -103,35 +103,53 @@ def batch_upsert(
         return 0
     
     saved_count = 0
+    total_records = len(records)
+    num_chunks = (total_records + chunk_size - 1) // chunk_size
+    
+    logger.info(f"Batch saving {total_records} records in {num_chunks} chunks of {chunk_size}")
     
     try:
         for i in range(0, len(records), chunk_size):
             chunk = records[i:i + chunk_size]
+            chunk_num = (i // chunk_size) + 1
             
-            if conflict_columns:
-                # Upsert (update on conflict)
-                supabase.table(table).upsert(
-                    chunk,
-                    on_conflict=conflict_columns
-                ).execute()
-            else:
-                # Simple insert
-                supabase.table(table).insert(chunk).execute()
-            
-            saved_count += len(chunk)
-            
-    except Exception as e:
-        logger.warning(f"Batch operation failed: {e}, trying individual inserts")
-        
-        # Fallback to individual inserts
-        for record in records[saved_count:]:
             try:
-                supabase.table(table).insert(record).execute()
-                saved_count += 1
-            except Exception as e2:
-                logger.debug(f"Individual insert failed: {e2}")
-                continue
+                if conflict_columns:
+                    # Upsert (update on conflict)
+                    result = supabase.table(table).upsert(
+                        chunk,
+                        on_conflict=conflict_columns
+                    ).execute()
+                else:
+                    # Simple insert
+                    result = supabase.table(table).insert(chunk).execute()
+                
+                saved_count += len(chunk)
+                logger.info(f"Chunk {chunk_num}/{num_chunks}: saved {len(chunk)} records")
+                
+            except Exception as chunk_error:
+                # Log the specific chunk error
+                logger.warning(f"Chunk {chunk_num} failed: {chunk_error}")
+                
+                # Try without conflict handling (plain insert)
+                try:
+                    result = supabase.table(table).insert(chunk).execute()
+                    saved_count += len(chunk)
+                    logger.info(f"Chunk {chunk_num}: saved {len(chunk)} records (plain insert)")
+                except Exception as insert_error:
+                    # Last resort: individual inserts for this chunk only
+                    logger.warning(f"Plain insert failed, trying individual for chunk {chunk_num}")
+                    for record in chunk:
+                        try:
+                            supabase.table(table).insert(record).execute()
+                            saved_count += 1
+                        except Exception:
+                            pass  # Skip duplicates silently
+                    
+    except Exception as e:
+        logger.error(f"Batch operation failed: {e}")
     
+    logger.info(f"Total saved: {saved_count}/{total_records}")
     return saved_count
 
 
@@ -191,11 +209,13 @@ def save_invoices(supabase: Client, records: Union[pd.DataFrame, List[Dict]]) ->
     
     logger.info(f"Saving {len(batch_data)} invoice records")
     
+    # Use plain insert (faster) - duplicates will be rejected by DB constraints
     return batch_upsert(
         supabase,
         table='invoices',
         records=batch_data,
-        conflict_columns='vendor,invoice_date,item_name,amount'
+        conflict_columns=None,  # Plain insert, no upsert
+        chunk_size=100
     )
 
 
