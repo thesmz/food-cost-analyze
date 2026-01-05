@@ -88,9 +88,10 @@ Examples:
 - "和牛ヒレ" → "Wagyu Beef Tenderloin"
 
 Ingredients:
-{json.dumps(names_to_translate, ensure_ascii=False)}
+{json.dumps(names_to_translate[:50], ensure_ascii=False)}
 
-Return ONLY valid JSON: {{"original": "English"}}"""
+Return ONLY valid JSON object with original Japanese as keys and English translations as values.
+Example format: {{"ぶどう": "Grapes", "イチゴＳ": "Strawberries (Small)"}}"""
 
     try:
         response = requests.post(
@@ -102,29 +103,47 @@ Return ONLY valid JSON: {{"original": "English"}}"""
             },
             json={
                 "model": "claude-sonnet-4-20250514",
-                "max_tokens": 2000,
+                "max_tokens": 4000,
                 "messages": [{"role": "user", "content": prompt}]
             },
-            timeout=60
+            timeout=120
         )
         
         if response.status_code == 200:
             import re
-            content = response.json()['content'][0]['text'].strip()
+            resp_json = response.json()
+            
+            # Check response structure
+            if 'content' not in resp_json or not resp_json['content']:
+                return pantry_dict, f"❌ Empty API response", False
+            
+            content = resp_json['content'][0].get('text', '').strip()
+            
+            if not content:
+                return pantry_dict, f"❌ No text in API response", False
             
             # Clean markdown if present
             if content.startswith('```'):
                 content = re.sub(r'^```(?:json)?\s*', '', content)
                 content = re.sub(r'\s*```$', '', content)
             
+            # Try to parse JSON
+            translations = None
             try:
                 translations = json.loads(content)
-            except:
-                match = re.search(r'\{[\s\S]*\}', content)
+            except json.JSONDecodeError as je:
+                # Try to extract JSON from the content
+                match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
                 if match:
-                    translations = json.loads(match.group())
-                else:
-                    return pantry_dict, "❌ Could not parse API response.", False
+                    try:
+                        translations = json.loads(match.group())
+                    except:
+                        pass
+            
+            if not translations or not isinstance(translations, dict):
+                # Show first 200 chars of response for debugging
+                preview = content[:200] if content else "(empty)"
+                return pantry_dict, f"❌ Could not parse API response. Preview: {preview}", False
             
             # Apply translations
             count = 0
@@ -133,12 +152,16 @@ Return ONLY valid JSON: {{"original": "English"}}"""
                     pantry_dict[name]['english_name'] = translations[name]
                     count += 1
             
-            return pantry_dict, f"✅ Translated {count} ingredients!", True
+            remaining = len([n for n in pantry_dict if not pantry_dict[n].get('english_name')])
+            return pantry_dict, f"✅ Translated {count} ingredients! ({remaining} remaining)", True
         else:
-            return pantry_dict, f"❌ API error {response.status_code}", False
+            error_detail = response.text[:200] if response.text else "No details"
+            return pantry_dict, f"❌ API error {response.status_code}: {error_detail}", False
             
+    except requests.exceptions.Timeout:
+        return pantry_dict, f"❌ API timeout (>120s). Try with fewer items.", False
     except Exception as e:
-        return pantry_dict, f"❌ Error: {str(e)[:100]}", False
+        return pantry_dict, f"❌ Error: {type(e).__name__}: {str(e)[:100]}", False
 
 
 # =============================================================================
@@ -186,7 +209,8 @@ def get_default_yield_for_ingredient(item_name: str, category: str) -> int:
 def load_pantry_from_invoices():
     """
     Load ingredient prices from invoice data.
-    Keeps only the MOST RECENT price for each unique ingredient.
+    Keeps items PER VENDOR - same ingredient from different vendors shown separately.
+    Uses most recent price for each item+vendor combination.
     """
     # Import vendor name mapper from utils
     try:
@@ -212,14 +236,24 @@ def load_pantry_from_invoices():
         invoices_df = invoices_df.sort_values('date', ascending=False)
     
     pantry = {}
+    seen_item_vendor = set()  # Track (item_name, vendor) pairs
+    
     for _, row in invoices_df.iterrows():
         item_name = row.get('item_name', '')
         if not item_name:
             continue
         
-        # Skip if we already have this item (we want the most recent, which comes first)
-        if item_name in pantry:
+        # Clean vendor name using mapping
+        vendor_raw = row.get('vendor', 'Unknown')
+        vendor = get_clean_vendor_name(vendor_raw)
+        
+        # Create unique key for item+vendor combination
+        item_vendor_key = (item_name, vendor)
+        
+        # Skip if we already have this item+vendor combo (we want the most recent)
+        if item_vendor_key in seen_item_vendor:
             continue
+        seen_item_vendor.add(item_vendor_key)
         
         # Determine category based on patterns
         category = 'Other'
@@ -235,10 +269,6 @@ def load_pantry_from_invoices():
         elif any(x in item_lower for x in ['ジロール', 'mushroom', 'きのこ', 'truffle', 'トリュフ', '野菜', 'vegetable']):
             category = 'Produce'
         
-        # Clean vendor name using mapping
-        vendor_raw = row.get('vendor', 'Unknown')
-        vendor = get_clean_vendor_name(vendor_raw)
-        
         # Calculate cost per unit
         qty = float(row.get('quantity', 1) or 1)
         amount = float(row.get('amount', 0) or 0)
@@ -246,8 +276,16 @@ def load_pantry_from_invoices():
         
         cost_per_unit = amount / qty if qty > 0 else amount
         
-        # Add to pantry (most recent price)
-        pantry[item_name] = {
+        # Use item_name as key (for display), but store vendor info
+        # If same item from different vendors, append vendor to make unique
+        display_key = item_name
+        if item_name in pantry and pantry[item_name]['vendor'] != vendor:
+            # Same item, different vendor - make key unique
+            display_key = f"{item_name} ({vendor})"
+        
+        # Add to pantry
+        pantry[display_key] = {
+            'original_name': item_name,  # Keep original for searching
             'cost_per_unit': cost_per_unit,
             'unit': unit,
             'vendor': vendor,
