@@ -126,10 +126,12 @@ item_sales = filtered_df.groupby('name').agg({
     'price': 'mean'
 }).reset_index()
 
+# Filter: minimum quantity and price > 0
 item_sales = item_sales[item_sales['qty'] >= min_qty]
+item_sales = item_sales[item_sales['price'] > 0]  # Exclude items with price = 0
 
 if item_sales.empty:
-    st.warning(f"No items with qty >= {min_qty}")
+    st.warning(f"No items with qty >= {min_qty} and price > 0")
     st.stop()
 
 # Option to set custom food costs
@@ -242,7 +244,7 @@ for quadrant, style in quadrant_style.items():
             mode='markers',
             name=quadrant,
             marker=dict(
-                size=12, 
+                size=8,  # Smaller markers
                 color=style['color'], 
                 symbol=style['symbol'],
                 line=dict(width=1, color='white')
