@@ -14,10 +14,18 @@ from config import INGREDIENT_PATTERNS
 # SHIPPING FEE / NON-FOOD ITEM DETECTION
 # =============================================================================
 SHIPPING_FEE_PATTERNS = [
+    # Shipping/Delivery
     '送料', '運賃', '配送料', '運送料', '宅配料', '発送料',
     'shipping', 'delivery', 'freight', 'postage',
     'クール便', 'チルド便', '冷凍便', '冷蔵便',
     'クール代', 'クール料金',
+    '宅配運賃',
+    # Payment/Banking terms (not food!)
+    '入金', '振込', '振り込み', '支払', '決済',
+    '請求', '調整', '値引', '割引', '返金',
+    'payment', 'transfer', 'credit', 'refund',
+    # Administrative
+    '手数料', '事務', '管理費',
 ]
 
 def is_shipping_fee(item_name: str) -> bool:
