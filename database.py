@@ -468,15 +468,31 @@ def delete_data_by_date_range(
 
 
 def get_unique_vendors(supabase: Client) -> List[str]:
-    """Get list of unique vendors from invoices table"""
+    """Get list of unique vendors from invoices table (raw names from DB)"""
     if not supabase:
         return []
     
     try:
-        result = supabase.table('invoices').select('vendor').execute()
-        if result.data:
-            vendors = set(row['vendor'] for row in result.data if row.get('vendor'))
-            return sorted(list(vendors))
+        # Get all vendors with pagination to ensure we get everything
+        all_vendors = set()
+        page_size = 1000
+        offset = 0
+        
+        while True:
+            result = supabase.table('invoices').select('vendor').range(offset, offset + page_size - 1).execute()
+            
+            if result.data:
+                for row in result.data:
+                    if row.get('vendor'):
+                        all_vendors.add(row['vendor'])
+                
+                if len(result.data) < page_size:
+                    break
+                offset += page_size
+            else:
+                break
+        
+        return sorted(list(all_vendors))
     except Exception as e:
         logger.error(f"Error getting vendors: {e}")
     
